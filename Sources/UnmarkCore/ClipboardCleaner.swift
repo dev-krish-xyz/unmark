@@ -39,30 +39,45 @@ public final class ClipboardCleaner {
         return false
     }
 
+    /// Reads the clipboard, cleans it and writes the result back in one step.
     /// - Parameter expectedChangeCount: the clipboard generation the user acted on. If the
     ///   clipboard moved on since, nothing is touched.
     public func clean(options: CleaningOptions, expectedChangeCount: Int? = nil) async -> CleanOutcome {
-        let changeCount = pasteboard.changeCount
-        if let expectedChangeCount, expectedChangeCount != changeCount { return .clipboardChanged }
-        if changeCount == lastWrittenChangeCount { return .alreadyClean }
-
-        switch PasteboardTypes.classify(pasteboard.types?.map(\.rawValue)) {
-        case .protected: return .protected
-        case .empty, .other: return .noText
-        case .text: break
-        }
-        if accessDenied { return .accessDenied }
-
         let snapshot: PasteboardSnapshot
-        switch capture() {
+        switch prepare(expectedChangeCount: expectedChangeCount) {
         case .success(let value): snapshot = value
         case .failure(let outcome): return outcome
         }
+        let result = await process(snapshot, options: options)
+        return commit(result, from: snapshot)
+    }
 
-        let result = await Task.detached(priority: .userInitiated) {
-            PasteboardTextCleaner.process(snapshot, options: options)
+    /// Step 1: checks the clipboard and copies its contents into memory.
+    public func prepare(expectedChangeCount: Int? = nil) -> Result<PasteboardSnapshot, CleanOutcome> {
+        let changeCount = pasteboard.changeCount
+        if let expectedChangeCount, expectedChangeCount != changeCount { return .failure(.clipboardChanged) }
+        if changeCount == lastWrittenChangeCount { return .failure(.alreadyClean) }
+
+        switch PasteboardTypes.classify(pasteboard.types?.map(\.rawValue)) {
+        case .protected: return .failure(.protected)
+        case .empty, .other: return .failure(.noText)
+        case .text: break
+        }
+        if accessDenied { return .failure(.accessDenied) }
+        return capture()
+    }
+
+    /// Step 2: cleans the snapshot off the main thread.
+    public func process(
+        _ snapshot: PasteboardSnapshot, options: CleaningOptions, progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> PasteboardCleaningResult {
+        await Task.detached(priority: .userInitiated) {
+            PasteboardTextCleaner.process(snapshot, options: options, progress: progress)
         }.value
+    }
 
+    /// Step 3: writes the cleaned items, unless the clipboard changed in the meantime.
+    public func commit(_ result: PasteboardCleaningResult, from snapshot: PasteboardSnapshot) -> CleanOutcome {
         guard pasteboard.changeCount == snapshot.changeCount else { return .clipboardChanged }
         guard result.changed else { return .alreadyClean }
 

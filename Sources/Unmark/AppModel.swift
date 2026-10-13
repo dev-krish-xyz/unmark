@@ -2,41 +2,64 @@ import AppKit
 import Observation
 import UnmarkCore
 
-enum IslandPhase: Equatable {
+/// What the notch island is showing.
+enum Island: Equatable {
     case hidden
-    /// Text is on the clipboard and has not been cleaned.
+    /// Copied text is waiting; small indicator beside the notch.
     case ready
-    /// Cursor is resting on the notch; cleaning starts when the dwell completes.
-    case dwelling
-    /// Cleaning has taken long enough to be worth showing.
-    case processing
-    case result(CleanOutcome)
+    /// The large hover popup.
+    case popup
+    /// Compact result after cleaning from the menu bar.
+    case toast(CleanOutcome)
 }
 
-/// Drives the clipboard flow: copy → ready → intentional hover → clean → result → collapse.
+/// Progress of the popup's single action.
+enum PopupStage: Equatable {
+    case idle
+    case processing
+    case done(CleanOutcome)
+    case undone
+}
+
+/// Drives the flow: copy → ready → hover opens popup → Paste & Clean → live progress →
+/// cleaned text on the clipboard → ⌘V anywhere.
 @MainActor
 @Observable
 final class AppModel {
-    static let dwell: Duration = .milliseconds(280)
-    static let processingDelay: Duration = .milliseconds(120)
-    static let resultDuration: Duration = .milliseconds(1700)
+    static let openDelay: Duration = .milliseconds(120)
+    /// Cleaning is usually instant; the activity bar stays up this long so it can be seen.
+    /// The clipboard is written as soon as cleaning finishes, not when the bar does.
+    static let minimumActivity: Duration = .milliseconds(650)
+    static let toastDuration: Duration = .milliseconds(1700)
+    /// A finished popup stays open at least this long, even if the cursor already left.
+    static let resultHold: Duration = .milliseconds(1500)
     /// The pre-clean clipboard is held in memory only this long.
     static let undoLifetime: Duration = .seconds(600)
+    static let previewLength = 600
 
-    private(set) var phase: IslandPhase = .hidden
+    private(set) var island: Island = .hidden {
+        didSet { if island != oldValue { onIslandChange?(island) } }
+    }
+    private(set) var stage: PopupStage = .idle
+    private(set) var progress: Double = 0
+    /// Copied text as read when the user clicked, for display.
+    private(set) var originalPreview: String?
+    /// The same text after cleaning.
+    private(set) var cleanedPreview: String?
     private(set) var hasPendingText = false
+    /// Whether the clipboard holds text at all (from its type list, not its contents).
+    private(set) var clipboardHasText = false
     private(set) var lastOutcome: CleanOutcome?
-    @ObservationIgnored private(set) var dwellStart = ContinuousClock.now
 
     @ObservationIgnored let cleaner = ClipboardCleaner()
     @ObservationIgnored private let monitor = ClipboardMonitor()
-    @ObservationIgnored private var pendingChangeCount: Int?
-    @ObservationIgnored private var dwellTask: Task<Void, Never>?
-    @ObservationIgnored private var collapseTask: Task<Void, Never>?
+    @ObservationIgnored private var openTask: Task<Void, Never>?
+    @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var isCleaning = false
-    /// Called after every completed clean so the menu bar can reflect it.
+    @ObservationIgnored private var finishedAt: ContinuousClock.Instant?
     @ObservationIgnored var onOutcome: ((CleanOutcome) -> Void)?
+    @ObservationIgnored var onIslandChange: ((Island) -> Void)?
 
     init() {
         monitor.onChange = { [weak self] change in self?.clipboardChanged(change) }
@@ -59,115 +82,180 @@ final class AppModel {
             startMonitoring()
         } else {
             stopMonitoring()
-            setPending(false, changeCount: nil)
+            setPending(false)
         }
     }
 
     /// Reads only the change count and type list, never contents.
     private func refreshPendingState() {
         let pasteboard = cleaner.pasteboard
-        let changeCount = pasteboard.changeCount
-        let isText = PasteboardTypes.classify(pasteboard.types?.map(\.rawValue)) == .text
-        setPending(isText && changeCount != cleaner.lastWrittenChangeCount, changeCount: changeCount)
+        clipboardHasText = PasteboardTypes.classify(pasteboard.types?.map(\.rawValue)) == .text
+        setPending(clipboardHasText && pasteboard.changeCount != cleaner.lastWrittenChangeCount)
     }
 
     private func clipboardChanged(_ change: ClipboardMonitor.Change) {
         if change.changeCount == cleaner.lastWrittenChangeCount { return }
         // Another copy replaced our cleaned text; drop the in-memory original right away.
         cleaner.forgetUndo()
-        setPending(change.content == .text, changeCount: change.changeCount)
+        clipboardHasText = change.content == .text
+        setPending(clipboardHasText)
     }
 
-    private func setPending(_ pending: Bool, changeCount: Int?) {
+    private func setPending(_ pending: Bool) {
         hasPendingText = pending
-        pendingChangeCount = pending ? changeCount : nil
-        if phase == .hidden || phase == .ready {
-            phase = pending ? .ready : .hidden
+        if island == .hidden || island == .ready {
+            island = pending ? .ready : .hidden
         }
     }
 
-    // MARK: Hover
+    // MARK: Popup
 
     func hoverBegan() {
-        guard Preferences.hoverToClean, !isCleaning else { return }
-        if !Preferences.monitorClipboard || !monitor.isRunning { refreshPendingState() }
-        guard hasPendingText, let expected = pendingChangeCount else { return }
-        collapseTask?.cancel()
-        dwellStart = .now
-        phase = .dwelling
-        dwellTask?.cancel()
-        dwellTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.dwell)
+        guard Preferences.hoverToClean, island != .popup else { return }
+        openTask?.cancel()
+        openTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.openDelay)
             guard !Task.isCancelled else { return }
-            await self?.clean(expectedChangeCount: expected)
+            self?.openPopup()
         }
     }
 
+    /// Cursor left the notch before the popup opened: a passing cursor never opens it.
     func hoverEnded() {
-        // Once the dwell completed, the clean runs to completion and shows its result.
-        guard phase == .dwelling, !isCleaning else { return }
-        dwellTask?.cancel()
-        dwellTask = nil
-        phase = hasPendingText ? .ready : .hidden
+        openTask?.cancel()
+        openTask = nil
+    }
+
+    private func openPopup() {
+        toastTask?.cancel()
+        refreshPendingState()
+        stage = .idle
+        progress = 0
+        originalPreview = nil
+        cleanedPreview = nil
+        island = .popup
+    }
+
+    /// Called when the cursor has left the popup. Never interrupts a running clean, and keeps
+    /// a fresh result on screen briefly.
+    func pointerLeftPopup() {
+        guard island == .popup, stage != .processing else { return }
+        if let finishedAt, ContinuousClock.now - finishedAt < Self.resultHold { return }
+        closePopup()
+    }
+
+    func closePopup() {
+        guard island == .popup, !isCleaning else { return }
+        stage = .idle
+        originalPreview = nil
+        cleanedPreview = nil
+        finishedAt = nil
+        island = hasPendingText ? .ready : .hidden
     }
 
     // MARK: Cleaning
 
-    /// Explicit user action (notch dwell or menu). Never called automatically.
-    func clean(expectedChangeCount: Int? = nil) async {
-        guard !isCleaning else { return }
-        isCleaning = true
-        collapseTask?.cancel()
-        let indicator = Task { [weak self] in
-            try? await Task.sleep(for: Self.processingDelay)
-            guard !Task.isCancelled, let self, self.isCleaning else { return }
-            self.phase = .processing
-        }
+    /// The popup's button: read the clipboard, clean it, put the result back.
+    func pasteAndClean() {
+        Task { await run(inPopup: true) }
+    }
 
-        let outcome = await cleaner.clean(options: Preferences.cleaningOptions, expectedChangeCount: expectedChangeCount)
-        indicator.cancel()
-        isCleaning = false
-
-        if case .cleaned = outcome {
-            undoExpiryTask?.cancel()
-            undoExpiryTask = Task { [weak self] in
-                try? await Task.sleep(for: Self.undoLifetime)
-                guard !Task.isCancelled else { return }
-                self?.cleaner.forgetUndo()
-            }
-        }
-
-        switch outcome {
-        case .cleaned, .alreadyClean, .noText, .protected:
-            setPending(false, changeCount: nil)
-        case .clipboardChanged:
-            refreshPendingState()
-        case .tooLarge, .accessDenied, .unreadable:
-            break
-        }
-        show(outcome)
+    /// Menu bar fallback; shows the popup's progress if it is open, a compact result otherwise.
+    func cleanFromMenu() {
+        Task { await run(inPopup: island == .popup) }
     }
 
     func undo() {
         guard cleaner.undo() else { return }
         // The restored text still carries its markers, so it is ready to clean again.
         refreshPendingState()
+        if island == .popup {
+            stage = .undone
+            cleanedPreview = nil
+            finishedAt = .now
+        }
     }
 
-    private func show(_ outcome: CleanOutcome) {
+    private func run(inPopup: Bool) async {
+        guard !isCleaning else { return }
+        isCleaning = true
+        let started = ContinuousClock.now
+        if inPopup {
+            stage = .processing
+            progress = 0
+            originalPreview = nil
+            cleanedPreview = nil
+        }
+
+        let options = Preferences.cleaningOptions
+        let outcome: CleanOutcome
+        switch cleaner.prepare() {
+        case .failure(let failure):
+            outcome = failure
+        case .success(let snapshot):
+            if inPopup { originalPreview = snapshot.plainText.map(Self.preview) }
+            let result = await cleaner.process(snapshot, options: options) { [weak self] fraction in
+                Task { @MainActor in
+                    guard let self, self.isCleaning else { return }
+                    self.progress = max(self.progress, fraction)
+                }
+            }
+            outcome = cleaner.commit(result, from: snapshot)
+            if inPopup {
+                cleanedPreview = outcome.isSuccess ? result.plainText.map(Self.preview) : originalPreview
+            }
+        }
+
+        if inPopup {
+            progress = 1
+            let remaining = Self.minimumActivity - (ContinuousClock.now - started)
+            if remaining > .zero { try? await Task.sleep(for: remaining) }
+        }
+        isCleaning = false
+        finish(outcome, inPopup: inPopup)
+    }
+
+    private func finish(_ outcome: CleanOutcome, inPopup: Bool) {
+        switch outcome {
+        case .cleaned:
+            undoExpiryTask?.cancel()
+            undoExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.undoLifetime)
+                guard !Task.isCancelled else { return }
+                self?.cleaner.forgetUndo()
+            }
+            setPending(false)
+        case .alreadyClean, .noText, .protected:
+            setPending(false)
+        case .clipboardChanged:
+            refreshPendingState()
+        case .tooLarge, .accessDenied, .unreadable:
+            break
+        }
+
         lastOutcome = outcome
-        phase = .result(outcome)
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
-            .announcement: outcome.message,
+            .announcement: outcome.isSuccess ? "\(outcome.message). Cleaned text is on the clipboard." : outcome.message,
             .priority: NSAccessibilityPriorityLevel.high.rawValue,
         ])
         onOutcome?(outcome)
-        collapseTask?.cancel()
-        collapseTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.resultDuration)
-            guard !Task.isCancelled, let self else { return }
-            self.phase = self.hasPendingText ? .ready : .hidden
+
+        if inPopup, island == .popup {
+            stage = .done(outcome)
+            finishedAt = .now
+        } else {
+            island = .toast(outcome)
+            toastTask?.cancel()
+            toastTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.toastDuration)
+                guard !Task.isCancelled, let self, case .toast = self.island else { return }
+                self.island = self.hasPendingText ? .ready : .hidden
+            }
         }
+    }
+
+    private static func preview(_ text: String) -> String {
+        text.count > previewLength ? String(text.prefix(previewLength)) + "…" : text
     }
 }
 
@@ -187,6 +275,19 @@ extension CleanOutcome {
         case .accessDenied: return "Clipboard access denied"
         case .clipboardChanged: return "Clipboard changed"
         case .unreadable: return "Couldn’t read clipboard"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .cleaned: "Cleaned text is on your clipboard. Press ⌘V to paste it anywhere."
+        case .alreadyClean: "Nothing hidden was found. Your clipboard was left as is."
+        case .noText: "Copy some text first, then try again."
+        case .protected: "This came from a password manager, so Unmark didn’t read it."
+        case .tooLarge: "Clipboards over 20 MB are skipped."
+        case .accessDenied: "Allow Unmark under Privacy & Security › Paste from Other Apps."
+        case .clipboardChanged: "Something new was copied while cleaning. Nothing was changed."
+        case .unreadable: "The app that copied this text may have quit."
         }
     }
 

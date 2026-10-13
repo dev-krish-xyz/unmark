@@ -13,7 +13,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private lazy var cleanItem = menuItem("Clean Clipboard", #selector(cleanClipboard))
     private lazy var undoItem = menuItem("Undo Last Clean", #selector(undo))
     private lazy var monitorItem = menuItem("Watch Clipboard", #selector(toggleMonitor))
-    private lazy var hoverItem = menuItem("Clean on Notch Hover", #selector(toggleHover))
+    private lazy var hoverItem = menuItem("Open on Notch Hover", #selector(toggleHover))
     private lazy var spacesItem = menuItem("Normalize Unusual Spaces", #selector(toggleSpaces))
     private lazy var loginItem = menuItem("Launch at Login", #selector(toggleLogin))
 
@@ -46,7 +46,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         feedbackTask?.cancel()
         setIcon(symbol: outcome.isProblem ? "exclamationmark.circle" : "checkmark.circle", label: outcome.message)
         feedbackTask = Task { [weak self] in
-            try? await Task.sleep(for: AppModel.resultDuration)
+            try? await Task.sleep(for: AppModel.toastDuration)
             guard !Task.isCancelled, let self else { return }
             self.feedbackTask = nil
             self.setIcon(ready: self.model.hasPendingText)
@@ -55,7 +55,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         statusLine.title = model.lastOutcome.map { "Last: \($0.message)" }
-            ?? (model.hasPendingText ? "Copied text ready to clean" : "Copy text, then hover the notch")
+            ?? (model.hasPendingText ? "Copied text ready to clean" : "Copy text, then hover over the notch")
         undoItem.isEnabled = model.cleaner.canUndo
         monitorItem.state = Preferences.monitorClipboard ? .on : .off
         hoverItem.state = Preferences.hoverToClean ? .on : .off
@@ -82,7 +82,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func cleanClipboard() {
-        Task { await model.clean() }
+        model.cleanFromMenu()
     }
 
     @objc private func undo() {

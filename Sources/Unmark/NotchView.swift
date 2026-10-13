@@ -7,25 +7,28 @@ struct IslandMetrics {
     /// Concave flare that blends the island into the top edge of the screen.
     static let ear: CGFloat = 6
     static let wing: CGFloat = 26
-    static let expandedRow: CGFloat = 34
-    static let minimumExpandedWidth: CGFloat = 300
+    static let toastRow: CGFloat = 34
+    static let popupBody: CGFloat = 196
 
-    var expandedWidth: CGFloat { max(notch.width + 120, Self.minimumExpandedWidth) }
-    /// Size of the transparent panel that hosts every state.
-    var canvas: CGSize { CGSize(width: expandedWidth + Self.ear * 2, height: notch.height + Self.expandedRow) }
+    var popupSize: CGSize { CGSize(width: max(notch.width + 300, 500), height: notch.height + Self.popupBody) }
+    var toastSize: CGSize { CGSize(width: max(notch.width + 120, 300), height: notch.height + Self.toastRow) }
+    /// Size of the panel that hosts every state: exactly the open popup.
+    var canvas: CGSize { CGSize(width: popupSize.width + Self.ear * 2, height: popupSize.height) }
 
-    func bodySize(for phase: IslandPhase) -> CGSize {
-        switch phase {
+    func bodySize(for island: Island) -> CGSize {
+        switch island {
         case .hidden: notch
         case .ready: CGSize(width: notch.width + Self.wing * 2, height: notch.height)
-        case .dwelling, .processing, .result: CGSize(width: expandedWidth, height: notch.height + Self.expandedRow)
+        case .popup: popupSize
+        case .toast: toastSize
         }
     }
 
-    func bottomRadius(for phase: IslandPhase) -> CGFloat {
-        switch phase {
+    func bottomRadius(for island: Island) -> CGFloat {
+        switch island {
         case .hidden, .ready: 9
-        default: 16
+        case .toast: 16
+        case .popup: 24
         }
     }
 }
@@ -36,26 +39,27 @@ struct NotchView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let phase = model.phase
-        let size = metrics.bodySize(for: phase)
+        let island = model.island
+        let size = metrics.bodySize(for: island)
         ZStack(alignment: .top) {
-            NotchShape(ear: IslandMetrics.ear, bottomRadius: metrics.bottomRadius(for: phase))
+            NotchShape(ear: IslandMetrics.ear, bottomRadius: metrics.bottomRadius(for: island))
                 .fill(.black)
                 .frame(width: size.width + IslandMetrics.ear * 2, height: size.height)
-            content(for: phase)
+            content(for: island)
                 .frame(width: size.width, height: size.height, alignment: .top)
                 .clipped()
         }
-        .opacity(phase == .hidden ? 0 : 1)
+        .opacity(island == .hidden ? 0 : 1)
         .frame(width: metrics.canvas.width, height: metrics.canvas.height, alignment: .top)
-        .animation(reduceMotion ? .easeInOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 0.84), value: phase)
+        .animation(reduceMotion ? .easeInOut(duration: 0.12) : .spring(response: 0.36, dampingFraction: 0.86), value: island)
+        .animation(.easeInOut(duration: 0.2), value: model.stage)
         .environment(\.colorScheme, .dark)
-        .accessibilityHidden(true)
+        .accessibilityHidden(island != .popup)
     }
 
     @ViewBuilder
-    private func content(for phase: IslandPhase) -> some View {
-        switch phase {
+    private func content(for island: Island) -> some View {
+        switch island {
         case .hidden:
             Color.clear
         case .ready:
@@ -71,77 +75,283 @@ struct NotchView: View {
             .padding(.horizontal, 9)
             .frame(height: metrics.notch.height)
             .transition(.opacity)
-        case .dwelling:
-            expandedRow {
-                DwellRing(start: model.dwellStart, duration: AppModel.dwell, animated: !reduceMotion)
-                Text("Cleaning clipboard")
-                    .foregroundStyle(.white.opacity(0.75))
-            }
-        case .processing:
-            expandedRow {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
-                Text("Cleaning…")
-                    .foregroundStyle(.white.opacity(0.75))
-            }
-        case .result(let outcome):
-            expandedRow {
-                Image(systemName: symbol(for: outcome))
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(tint(for: outcome))
-                Text(outcome.message)
-                    .foregroundStyle(.white)
-                    .monospacedDigit()
-            }
-        }
-    }
-
-    private func expandedRow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(spacing: 0) {
-            Spacer().frame(height: metrics.notch.height)
-            HStack(spacing: 8) { content() }
+        case .toast(let outcome):
+            VStack(spacing: 0) {
+                Spacer().frame(height: metrics.notch.height)
+                HStack(spacing: 8) {
+                    OutcomeIcon(outcome: outcome)
+                    Text(outcome.message).foregroundStyle(.white).monospacedDigit()
+                }
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
-                .frame(height: IslandMetrics.expandedRow - 4, alignment: .center)
+                .frame(height: IslandMetrics.toastRow - 4)
+            }
+            .transition(.opacity)
+        case .popup:
+            PopupView(model: model, metrics: metrics, reduceMotion: reduceMotion)
+                .transition(.opacity)
         }
-        .transition(.opacity)
-    }
-
-    private func symbol(for outcome: CleanOutcome) -> String {
-        if outcome.isSuccess { return "checkmark.circle.fill" }
-        if outcome.isProblem { return "exclamationmark.circle.fill" }
-        return "checkmark.circle"
-    }
-
-    private func tint(for outcome: CleanOutcome) -> Color {
-        if outcome.isSuccess { return .green }
-        if outcome.isProblem { return .orange }
-        return .white.opacity(0.6)
     }
 }
 
-/// Circular indicator that fills while the cursor rests on the notch.
-private struct DwellRing: View {
-    let start: ContinuousClock.Instant
-    let duration: Duration
+/// The large hover popup: one button, then a live view of the clean.
+private struct PopupView: View {
+    let model: AppModel
+    let metrics: IslandMetrics
+    let reduceMotion: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .frame(height: metrics.notch.height)
+            Group {
+                switch model.stage {
+                case .idle: idle
+                default: activity
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 10)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .overlay(alignment: .bottom) {
+            if showsBar {
+                ActivityBar(progress: model.progress, tint: barTint, animated: !reduceMotion)
+                    .padding(.horizontal, 26)
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    // Lives beside the camera housing, so it stays clear of the notch itself.
+    private var header: some View {
+        HStack {
+            Text("Unmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.55))
+            Spacer(minLength: metrics.notch.width + 24)
+            Text(statusLabel)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.55))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 22)
+    }
+
+    private var idle: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 0)
+            Button(action: model.pasteAndClean) {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.on.clipboard.fill")
+                    Text("Paste & Clean")
+                }
+            }
+            .buttonStyle(PasteButtonStyle())
+            .disabled(!model.clipboardHasText)
+            .opacity(model.clipboardHasText ? 1 : 0.35)
+            .accessibilityHint("Reads the copied text, removes hidden characters and puts the result back on the clipboard")
+            Text(model.clipboardHasText
+                 ? "Removes hidden characters from your copied text, then ⌘V pastes the clean version."
+                 : "Copy some text first.")
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.5))
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var activity: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                statusIcon
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+                Spacer(minLength: 8)
+                if case .done(let outcome) = model.stage, outcome.isSuccess {
+                    Button("Undo", action: model.undo)
+                        .buttonStyle(SmallButtonStyle())
+                        .accessibilityHint("Puts the original copied text back on the clipboard")
+                }
+            }
+            if let preview = previewText {
+                Text(preview)
+                    .font(.system(size: 12.5))
+                    .lineSpacing(2)
+                    .lineLimit(5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.07)))
+                    .id(previewKey)
+                    .transition(.opacity)
+            } else {
+                Spacer(minLength: 0)
+            }
+            Text(detail)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch model.stage {
+        case .done(let outcome):
+            OutcomeIcon(outcome: outcome)
+        case .undone:
+            Image(systemName: "arrow.uturn.backward.circle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.7))
+        default:
+            ProgressView().controlSize(.small).tint(.white)
+        }
+    }
+
+    private var title: String {
+        switch model.stage {
+        case .idle: ""
+        case .processing:
+            model.originalPreview == nil ? "Reading clipboard…" : "Cleaning \(markCount) hidden \(markCount == 1 ? "mark" : "marks")…"
+        case .done(let outcome): outcome.message
+        case .undone: "Original restored"
+        }
+    }
+
+    private var detail: String {
+        switch model.stage {
+        case .idle: ""
+        case .processing: markCount > 0 ? "Highlighted:  •  hidden character    ␣  unusual space" : "Checking for hidden characters…"
+        case .done(let outcome): outcome.detail
+        case .undone: "Your clipboard holds the original text again."
+        }
+    }
+
+    private var statusLabel: String {
+        switch model.stage {
+        case .idle: model.hasPendingText ? "Text ready" : ""
+        case .processing: "\(Int(model.progress * 100))%"
+        case .done(let outcome): outcome.isSuccess ? "⌘V to paste" : ""
+        case .undone: ""
+        }
+    }
+
+    private var showsBar: Bool {
+        switch model.stage {
+        case .processing: true
+        case .done(let outcome): outcome.isSuccess
+        default: false
+        }
+    }
+
+    private var barTint: Color {
+        if case .done = model.stage { return .green }
+        return .white
+    }
+
+    private var previewKey: String {
+        if case .done(let outcome) = model.stage, outcome.isSuccess { return "cleaned" }
+        return "original"
+    }
+
+    private var markCount: Int {
+        model.originalPreview.map { TextCleaner.edits(in: $0, options: Preferences.cleaningOptions).count } ?? 0
+    }
+
+    /// Before and during cleaning the hidden characters are drawn visibly; afterwards the
+    /// cleaned text is shown as is.
+    private var previewText: AttributedString? {
+        if case .done(let outcome) = model.stage, outcome.isSuccess, let cleaned = model.cleanedPreview {
+            var text = AttributedString(cleaned)
+            text.foregroundColor = .white.opacity(0.88)
+            return text
+        }
+        return model.originalPreview.map(Self.marked)
+    }
+
+    private static func marked(_ text: String) -> AttributedString {
+        let source = text as NSString
+        var result = AttributedString()
+        var cursor = 0
+        func plain(_ range: NSRange) {
+            guard range.length > 0 else { return }
+            var part = AttributedString(source.substring(with: range))
+            part.foregroundColor = .white.opacity(0.88)
+            result += part
+        }
+        for edit in TextCleaner.edits(in: text, options: Preferences.cleaningOptions) {
+            plain(NSRange(location: cursor, length: edit.range.location - cursor))
+            var token = AttributedString(edit.replacement.isEmpty ? "•" : "␣")
+            token.foregroundColor = .orange
+            token.font = .system(size: 12.5, weight: .bold)
+            result += token
+            cursor = NSMaxRange(edit.range)
+        }
+        plain(NSRange(location: cursor, length: source.length - cursor))
+        return result
+    }
+}
+
+/// Thin live-activity bar along the bottom of the island.
+private struct ActivityBar: View {
+    let progress: Double
+    let tint: Color
     let animated: Bool
 
     var body: some View {
-        TimelineView(.animation(paused: !animated)) { _ in
-            ZStack {
-                Circle().stroke(.white.opacity(0.2), lineWidth: 2)
-                Circle()
-                    .trim(from: 0, to: animated ? progress : 1)
-                    .stroke(.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.12))
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(geometry.size.width * progress, 3))
             }
         }
-        .frame(width: 13, height: 13)
+        .frame(height: 3)
+        .animation(animated ? .easeInOut(duration: 0.55) : nil, value: progress)
+        .accessibilityElement()
+        .accessibilityLabel("Cleaning progress")
+        .accessibilityValue("\(Int(progress * 100)) percent")
     }
+}
 
-    private var progress: CGFloat {
-        CGFloat(min(max((ContinuousClock.now - start) / duration, 0), 1))
+private struct OutcomeIcon: View {
+    let outcome: CleanOutcome
+
+    var body: some View {
+        Image(systemName: outcome.isSuccess ? "checkmark.circle.fill"
+              : outcome.isProblem ? "exclamationmark.circle.fill" : "checkmark.circle")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(outcome.isSuccess ? Color.green : outcome.isProblem ? .orange : .white.opacity(0.6))
+    }
+}
+
+private struct PasteButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.black)
+            .frame(width: 230, height: 46)
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct SmallButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 24)
+            .background(Capsule().fill(.white.opacity(configuration.isPressed ? 0.25 : 0.14)))
+            .contentShape(Capsule())
     }
 }
 

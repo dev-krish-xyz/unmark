@@ -68,16 +68,29 @@ private final class SensorView: NSView {
     }
 }
 
-/// Owns the two notch panels: a hover sensor and a click-through display.
+/// Lets the first click on the popup's button work without activating Unmark, so keyboard
+/// focus (and ⌘V) stays in the app the user is working in.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Owns the two notch panels: a hover sensor over the camera housing, and the island display.
+/// The display is click-through except while the popup is open.
 @MainActor
 final class NotchController {
+    /// How long the cursor may be outside the open popup before it closes.
+    private static let leaveGrace: TimeInterval = 0.35
+
     private let model: AppModel
     private var geometry: NotchGeometry?
     private var sensor: IslandPanel?
     private var display: IslandPanel?
+    private var pointerTimer: Timer?
+    private var outsideSince: Date?
 
     init(model: AppModel) {
         self.model = model
+        model.onIslandChange = { [weak self] island in self?.islandChanged(island) }
     }
 
     var hasNotch: Bool { geometry != nil }
@@ -100,7 +113,7 @@ final class NotchController {
                                   width: canvas.width, height: canvas.height)
         let display = IslandPanel(frame: displayFrame)
         display.ignoresMouseEvents = true
-        let hosting = NSHostingView(rootView: NotchView(model: model, metrics: metrics))
+        let hosting = FirstMouseHostingView(rootView: NotchView(model: model, metrics: metrics))
         hosting.sizingOptions = []
         display.contentView = hosting
         display.orderFrontRegardless()
@@ -128,7 +141,38 @@ final class NotchController {
         }
     }
 
+    private func islandChanged(_ island: Island) {
+        let isOpen = island == .popup
+        display?.ignoresMouseEvents = !isOpen
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        outsideSince = nil
+        guard isOpen else { return }
+        // Runs only while the popup is open; tracking areas are unreliable on a panel whose
+        // ignoresMouseEvents flips while the cursor is already inside it.
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkPointer() }
+        }
+        timer.tolerance = 0.03
+        RunLoop.main.add(timer, forMode: .common)
+        pointerTimer = timer
+    }
+
+    private func checkPointer() {
+        guard let display else { return }
+        let body = display.frame.insetBy(dx: IslandMetrics.ear, dy: 0)
+        if NSMouseInRect(NSEvent.mouseLocation, body, false) {
+            outsideSince = nil
+        } else if let outsideSince {
+            if Date().timeIntervalSince(outsideSince) >= Self.leaveGrace { model.pointerLeftPopup() }
+        } else {
+            outsideSince = Date()
+        }
+    }
+
     func teardown() {
+        pointerTimer?.invalidate()
+        pointerTimer = nil
         sensor?.close()
         display?.close()
         sensor = nil

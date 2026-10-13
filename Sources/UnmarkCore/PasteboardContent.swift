@@ -17,6 +17,25 @@ public struct PasteboardSnapshot: Sendable, Equatable {
     }
 
     public var byteCount: Int { items.joined().reduce(0) { $0 + $1.data.count } }
+
+    /// Plain text of the first item that has any, for display only.
+    public var plainText: String? { Self.plainText(of: items) }
+
+    static func plainText(of items: [[Entry]]) -> String? {
+        for entries in items {
+            func data(_ type: String) -> Data? { entries.first { $0.type == type }?.data }
+            if let data = data(PasteboardTypes.plainUTF8), let text = String(data: data, encoding: .utf8) { return text }
+            if let data = data(PasteboardTypes.plainUTF16External), let text = String(data: data, encoding: .utf16) { return text }
+            if let data = data(PasteboardTypes.plainUTF16), let text = String(data: data, encoding: .utf16LittleEndian) { return text }
+            for entry in entries where PasteboardTypes.rtf.contains(entry.type) || PasteboardTypes.rtfd.contains(entry.type) {
+                let type: NSAttributedString.DocumentType = PasteboardTypes.rtf.contains(entry.type) ? .rtf : .rtfd
+                if let text = try? NSAttributedString(data: entry.data, options: [.documentType: type], documentAttributes: nil) {
+                    return text.string
+                }
+            }
+        }
+        return nil
+    }
 }
 
 public enum ClipboardContent: Sendable, Equatable {
@@ -60,28 +79,39 @@ public struct PasteboardCleaningResult: Sendable, Equatable {
     public var removedCount: Int
     public var replacedCount: Int
     public var changed: Bool { removedCount + replacedCount > 0 }
+    public var plainText: String? { PasteboardSnapshot.plainText(of: items) }
 }
 
 /// Pure transformation of a snapshot. Safe to run off the main thread.
 public enum PasteboardTextCleaner {
-    public static func process(_ snapshot: PasteboardSnapshot, options: CleaningOptions) -> PasteboardCleaningResult {
+    /// - Parameter progress: called with the fraction of bytes processed, ending at 1.
+    public static func process(
+        _ snapshot: PasteboardSnapshot, options: CleaningOptions, progress: (@Sendable (Double) -> Void)? = nil
+    ) -> PasteboardCleaningResult {
         var removed = 0, replaced = 0
+        let total = max(snapshot.byteCount, 1)
+        var done = 0
         let items = snapshot.items.map { entries -> [PasteboardSnapshot.Entry] in
-            let item = processItem(entries, options: options)
+            let item = processItem(entries, options: options) { bytes in
+                done += bytes
+                progress?(min(Double(done) / Double(total), 1))
+            }
             removed += item.removed
             replaced += item.replaced
             return item.entries
         }
+        progress?(1)
         return PasteboardCleaningResult(items: items, removedCount: removed, replacedCount: replaced)
     }
 
     private static func processItem(
-        _ entries: [PasteboardSnapshot.Entry], options: CleaningOptions
+        _ entries: [PasteboardSnapshot.Entry], options: CleaningOptions, processed: (Int) -> Void
     ) -> (entries: [PasteboardSnapshot.Entry], removed: Int, replaced: Int) {
         var removed = 0, replaced = 0, richChanged = false
         var output: [PasteboardSnapshot.Entry] = []
 
         for entry in entries {
+            defer { processed(entry.data.count) }
             guard let cleaned = clean(entry, options: options) else {
                 output.append(entry)
                 continue

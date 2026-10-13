@@ -300,3 +300,59 @@ private func rtf(_ text: NSAttributedString) -> Data {
 private final class SilentProvider: NSObject, NSPasteboardItemDataProvider {
     func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {}
 }
+
+@Suite struct StagedCleaningTests {
+    @Test func progressIsMonotonicAndCompletes() {
+        let snapshot = PasteboardSnapshot(items: [[
+            .init(type: PasteboardTypes.plainUTF8, data: Data("a\u{200B}b".utf8)),
+            .init(type: "public.png", data: Data(repeating: 0, count: 1000)),
+        ]], changeCount: 0)
+        let values = Locked<[Double]>([])
+        _ = PasteboardTextCleaner.process(snapshot, options: CleaningOptions()) { value in values.mutate { $0.append(value) } }
+        let reported = values.value
+        #expect(reported == reported.sorted())
+        #expect(reported.last == 1)
+    }
+
+    @Test func plainTextPrefersPlainThenRichText() {
+        let rtfData = try! NSAttributedString(string: "from rtf").data(
+            from: NSRange(location: 0, length: 8), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        let rtfOnly = PasteboardSnapshot(items: [[.init(type: "public.rtf", data: rtfData)]], changeCount: 0)
+        #expect(rtfOnly.plainText == "from rtf")
+        let both = PasteboardSnapshot(items: [[.init(type: "public.rtf", data: rtfData),
+                                               .init(type: PasteboardTypes.plainUTF8, data: Data("plain".utf8))]], changeCount: 0)
+        #expect(both.plainText == "plain")
+        #expect(PasteboardSnapshot(items: [[.init(type: "public.png", data: Data())]], changeCount: 0).plainText == nil)
+    }
+
+    @MainActor @Test func stagesMatchOneShotClean() async throws {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("x\u{200B}y", forType: .string)
+        let cleaner = ClipboardCleaner(pasteboard: pasteboard)
+
+        let snapshot = try cleaner.prepare().get()
+        #expect(snapshot.plainText == "x\u{200B}y")
+        let result = await cleaner.process(snapshot, options: CleaningOptions())
+        #expect(result.plainText == "xy")
+        #expect(cleaner.commit(result, from: snapshot) == .cleaned(removed: 1, replaced: 0))
+        #expect(pasteboard.string(forType: .string) == "xy")
+        #expect(cleaner.prepare().failureValue == .alreadyClean)
+    }
+}
+
+private final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value { lock.withLock { stored } }
+    func mutate(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
+}
+
+private extension Result {
+    var failureValue: Failure? {
+        if case .failure(let error) = self { return error }
+        return nil
+    }
+}

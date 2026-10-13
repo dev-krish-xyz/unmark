@@ -1,20 +1,23 @@
 # Unmark
 
-Unmark is a small native macOS utility. It removes invisible Unicode characters and look-alike spaces from text you copy. Copy something, rest the cursor on the MacBook notch, and paste. The clean text is already on the clipboard.
+Unmark is a small native macOS utility. It removes invisible Unicode characters and look-alike spaces from text you copy. Copy something, move the cursor to the MacBook notch, click **Paste & Clean**, then press ⌘V anywhere.
 
 - **Native**: Swift, SwiftUI and AppKit. A 270 KB download, no dependencies, about 19 MB of memory and effectively zero CPU when idle.
 - **Offline**: runs in the App Sandbox without any network entitlement, so macOS itself blocks network access. No telemetry.
-- **Deliberate**: the clipboard changes only when you hold the cursor on the notch (or choose *Clean Clipboard*), never on its own.
+- **Deliberate**: hovering only opens the popup. The clipboard changes only when you click **Paste & Clean** (or choose *Clean Clipboard* in the menu bar).
 - **Careful**: rich text keeps its formatting, and emoji, scripts that need joiners, bidirectional text and the Apple logo stay intact.
 
 ## How it works
 
 1. Copy text in any app. A small dot appears beside the notch.
-2. Move the cursor up into the notch and keep it there for about a quarter of a second. A ring fills while you wait, and a cursor that only passes through does nothing.
-3. Unmark cleans every text representation on the clipboard (plain, RTF/RTFD and HTML) and writes it back.
-4. The island reports the result, for example *Removed 12 characters*, then collapses.
+2. Move the cursor up to the notch. A large popup opens with a single **Paste & Clean** button. A cursor that only passes through doesn't open it.
+3. Click the button. The copied text appears in the popup with hidden characters highlighted (`•` hidden character, `␣` unusual space), and a live activity bar runs along the bottom of the island.
+4. When it finishes, the cleaned text is already on your clipboard. The highlights disappear from the preview and the popup says how many characters were removed. Press ⌘V in any app.
+5. Move the cursor away and the popup closes. **Undo** in the popup (or the menu bar) puts back the exact original clipboard as long as you haven't copied anything else since.
 
-On Macs without a notch, on external displays, or with the lid closed, use **Clean Clipboard** in the menu bar item. The menu also has **Undo Last Clean**, which puts back the exact original clipboard as long as you haven't copied anything else since.
+The popup never takes keyboard focus, so ⌘V goes to the app you were working in. Cleaning usually takes milliseconds. The clipboard is written the moment it finishes, and the activity bar stays visible for about half a second so you can see it.
+
+On Macs without a notch, on external displays, or with the lid closed, use **Clean Clipboard** in the menu bar item instead.
 
 ## What gets removed
 
@@ -50,7 +53,7 @@ Tabs, line breaks, trailing whitespace and ordinary text are never modified. If 
 
 ## Privacy
 
-- While watching, Unmark reads only the clipboard's change counter and the list of data types. It reads the clipboard's **content** only when you trigger a clean.
+- While watching, Unmark reads only the clipboard's change counter and the list of data types. It reads the clipboard's **content** only when you click **Paste & Clean** or choose **Clean Clipboard**.
 - The original clipboard is kept in memory for undo. It is discarded when you copy something else, after 10 minutes, or when the screen locks, and is never written to disk.
 - On macOS 15.4 and later, macOS may ask whether Unmark can paste from other apps. You can set this under **System Settings › Privacy & Security › Paste from Other Apps**. If access is denied, Unmark shows *Clipboard access denied* and changes nothing.
 
@@ -66,7 +69,7 @@ Releases are signed with a Developer ID and notarized only when the project's si
 xattr -dr com.apple.quarantine /Applications/Unmark.app
 ```
 
-The menu bar item has toggles for **Watch Clipboard**, **Clean on Notch Hover**, **Normalize Unusual Spaces** and **Launch at Login**.
+The menu bar item has toggles for **Watch Clipboard**, **Open on Notch Hover**, **Normalize Unusual Spaces** and **Launch at Login**.
 
 ## Development
 
