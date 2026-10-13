@@ -45,7 +45,8 @@ Tabs, line breaks, trailing whitespace and ordinary text are never modified. If 
 
 ## Limitations
 
-- Text copied from ChatGPT, Claude and most other assistants today usually contains **no** hidden characters, so Unmark reports *No hidden characters found*. That is the correct result, not a failure. Visible typography such as curly quotes, em dashes and ellipses is real text and is never changed.
+- Text copied from ChatGPT, Claude and most other assistants usually contains **no** hidden characters, so Unmark reports *No hidden characters found*. That is the correct result, not a failure. The text watermarks these providers announced in 2026 (OpenAI's textGrain, Anthropic's SynthID-Text-based mark, Google's SynthID-Text) are **statistical**: they are a pattern in which words the model chose, with no hidden characters, and only the provider's detector can find them. Unmark cannot see or remove them, and does not try to.
+- Visible typography such as curly quotes, em dashes and ellipses is real text and is never changed.
 
 - Unmark removes **character-level** markers only. It does **not** detect or remove statistical watermarks such as SynthID-Text, which are embedded in word choice, and it does not rewrite or paraphrase anything. There is no guarantee that cleaned text is free of every watermark.
 - Content that isn't text (images, files) and content marked as concealed or transient by password managers ([nspasteboard.org](http://nspasteboard.org)) is never read.

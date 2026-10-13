@@ -65,9 +65,9 @@ struct NotchView: View {
     private func animation(for island: Island) -> Animation {
         if reduceMotion { return .easeInOut(duration: 0.15) }
         switch island {
-        case .popup: return .spring(duration: 0.5, bounce: 0.2)
-        case .toast: return .spring(duration: 0.42, bounce: 0.18)
-        case .ready, .hidden: return .spring(duration: 0.36, bounce: 0.04)
+        case .popup: return .spring(duration: 0.42, bounce: 0.2)
+        case .toast: return .spring(duration: 0.36, bounce: 0.18)
+        case .ready, .hidden: return .spring(duration: 0.3, bounce: 0.04)
         }
     }
 
@@ -76,8 +76,8 @@ struct NotchView: View {
         if reduceMotion { return .opacity }
         return .asymmetric(
             insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
-                .animation(.easeOut(duration: 0.24).delay(0.12)),
-            removal: .opacity.animation(.easeIn(duration: 0.1))
+                .animation(.easeOut(duration: 0.2).delay(0.09)),
+            removal: .opacity.animation(.easeIn(duration: 0.08))
         )
     }
 
@@ -360,10 +360,10 @@ private struct PasteButtonStyle: ButtonStyle {
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.black)
             .frame(width: 230, height: 46)
-            .background(RoundedRectangle(cornerRadius: 19, style: .continuous).fill(.white))
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .animation(.smooth(duration: 0.15), value: configuration.isPressed)
     }
 }
