@@ -11,7 +11,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     private lazy var statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private lazy var cleanItem = menuItem("Clean Clipboard", #selector(cleanClipboard))
-    private lazy var undoItem = menuItem("Undo Last Clean", #selector(undo))
+    private lazy var rewordItem = menuItem("Reword Clipboard", #selector(reword))
+    private lazy var styleItem = NSMenuItem(title: "Reword Style", action: nil, keyEquivalent: "")
+    private lazy var undoItem = menuItem("Undo", #selector(undo))
     private lazy var monitorItem = menuItem("Watch Clipboard", #selector(toggleMonitor))
     private lazy var hoverItem = menuItem("Open on Notch Hover", #selector(toggleHover))
     private lazy var spacesItem = menuItem("Normalize Unusual Spaces", #selector(toggleSpaces))
@@ -26,7 +28,15 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
         statusLine.isEnabled = false
-        for entry in [statusLine, .separator(), cleanItem, undoItem, .separator(),
+        let styles = NSMenu()
+        for style in RewriteStyle.allCases {
+            let item = menuItem(style.title, #selector(chooseStyle(_:)))
+            item.representedObject = style.rawValue
+            item.toolTip = style.summary
+            styles.addItem(item)
+        }
+        styleItem.submenu = styles
+        for entry in [statusLine, .separator(), cleanItem, rewordItem, styleItem, undoItem, .separator(),
                       monitorItem, hoverItem, spacesItem, loginItem, .separator(),
                       menuItem("About Unmark", #selector(about)),
                       menuItem("Quit Unmark", #selector(quit), key: "q")] {
@@ -54,8 +64,15 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        statusLine.title = model.lastOutcome.map { "Last: \($0.message)" }
+        statusLine.title = model.isBusy ? "Working…" : model.lastOutcome.map { "Last: \($0.message)" }
             ?? (model.hasPendingText ? "Copied text ready to clean" : "Copy text, then hover over the notch")
+        cleanItem.isEnabled = !model.isBusy
+        let unavailable = OnDeviceModel.unavailableReason
+        rewordItem.isEnabled = !model.isBusy && unavailable == nil
+        rewordItem.toolTip = unavailable ?? "Rewrites the copied text with Apple’s on-device model"
+        for item in styleItem.submenu?.items ?? [] {
+            item.state = item.representedObject as? String == model.rewordStyle.rawValue ? .on : .off
+        }
         undoItem.isEnabled = model.cleaner.canUndo
         monitorItem.state = Preferences.monitorClipboard ? .on : .off
         hoverItem.state = Preferences.hoverToClean ? .on : .off
@@ -85,6 +102,15 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         model.cleanFromMenu()
     }
 
+    @objc private func reword() {
+        model.rewordFromMenu()
+    }
+
+    @objc private func chooseStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let style = RewriteStyle(rawValue: raw) else { return }
+        model.setRewordStyle(style)
+    }
+
     @objc private func undo() {
         model.undo()
     }
@@ -111,7 +137,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         NSApp.activate()
         NSApp.orderFrontStandardAboutPanel(options: [
             .credits: NSAttributedString(
-                string: "Removes invisible Unicode characters and unusual spaces from copied text. Works offline.\n\nCleaning rules ported from watermarks-remover (MIT).",
+                string: "Removes invisible Unicode characters and unusual spaces from copied text, and can reword it with Apple’s on-device model. Works offline.\n\nCleaning rules and reword prompts adapted from watermarks-remover (MIT).",
                 attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
             ),
         ])

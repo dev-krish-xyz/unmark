@@ -165,26 +165,58 @@ private struct PopupView: View {
     }
 
     private var idle: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             Spacer(minLength: 0)
-            Button(action: model.pasteAndClean) {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.on.clipboard.fill")
-                    Text("Paste & Clean")
+            HStack(spacing: 10) {
+                Button(action: model.pasteAndClean) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.on.clipboard.fill")
+                        Text("Paste & Clean")
+                    }
+                }
+                .buttonStyle(PasteButtonStyle(prominent: true))
+                .disabled(!model.clipboardHasText)
+                .opacity(model.clipboardHasText ? 1 : 0.35)
+                .accessibilityHint("Reads the copied text, removes hidden characters and puts the result back on the clipboard")
+
+                Button(action: model.pasteAndReword) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wand.and.stars")
+                        Text("Reword")
+                    }
+                }
+                .buttonStyle(PasteButtonStyle(prominent: false))
+                .disabled(!canReword)
+                .opacity(canReword ? 1 : 0.35)
+                .accessibilityHint("Rewrites the copied text with Apple’s on-device model and puts it on the clipboard as plain text")
+            }
+            if model.rewordUnavailableReason == nil {
+                HStack(spacing: 6) {
+                    ForEach(RewriteStyle.allCases, id: \.self) { style in
+                        Button(style.title) { model.setRewordStyle(style) }
+                            .buttonStyle(ChipButtonStyle(selected: style == model.rewordStyle))
+                            .accessibilityAddTraits(style == model.rewordStyle ? .isSelected : [])
+                            .accessibilityHint(style.summary)
+                    }
                 }
             }
-            .buttonStyle(PasteButtonStyle())
-            .disabled(!model.clipboardHasText)
-            .opacity(model.clipboardHasText ? 1 : 0.35)
-            .accessibilityHint("Reads the copied text, removes hidden characters and puts the result back on the clipboard")
-            Text(model.clipboardHasText
-                 ? "Removes hidden characters from your copied text, then ⌘V pastes the clean version."
-                 : "Copy some text first.")
+            Text(caption)
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.5))
                 .multilineTextAlignment(.center)
+                .lineLimit(2)
             Spacer(minLength: 0)
         }
+    }
+
+    private var canReword: Bool {
+        model.clipboardHasText && model.rewordUnavailableReason == nil
+    }
+
+    private var caption: String {
+        guard model.clipboardHasText else { return "Copy some text first." }
+        if let reason = model.rewordUnavailableReason { return "Clean removes hidden characters. \(reason)" }
+        return "Clean removes hidden characters. Reword rewrites on this Mac: \(model.rewordStyle.summary.lowercased())."
     }
 
     private var activity: some View {
@@ -196,6 +228,11 @@ private struct PopupView: View {
                     .foregroundStyle(.white)
                     .monospacedDigit()
                 Spacer(minLength: 8)
+                if model.stage == .processing, model.action == .reword {
+                    Button("Cancel", action: model.cancelReword)
+                        .buttonStyle(SmallButtonStyle())
+                        .accessibilityHint("Stops rewording and leaves the clipboard unchanged")
+                }
                 if case .done(let outcome) = model.stage, outcome.isSuccess {
                     Button("Undo", action: model.undo)
                         .buttonStyle(SmallButtonStyle())
@@ -239,6 +276,8 @@ private struct PopupView: View {
     private var title: String {
         switch model.stage {
         case .idle: ""
+        case .processing where model.action == .reword:
+            rewordTitle
         case .processing:
             model.originalPreview == nil ? "Reading clipboard…" : "Cleaning \(markCount) hidden \(markCount == 1 ? "mark" : "marks")…"
         case .done(let outcome): outcome.message
@@ -246,9 +285,20 @@ private struct PopupView: View {
         }
     }
 
+    private var rewordTitle: String {
+        guard let progress = model.rewordProgress else { return "Reading clipboard…" }
+        let position = progress.passages > 1 ? " · \(progress.passage) of \(progress.passages)" : ""
+        switch progress.phase {
+        case .translating(let language): return "Translating to \(language)\(position)…"
+        case .writing: return progress.passages > 1 ? "Rewording passage \(progress.passage) of \(progress.passages)…" : "Rewording…"
+        }
+    }
+
     private var detail: String {
         switch model.stage {
         case .idle: ""
+        case .processing where model.action == .reword:
+            "\(model.rewordStyle.title) · Apple Intelligence, on this Mac · Clipboard changes when done"
         case .processing: markCount > 0 ? "Highlighted:  •  hidden character    ␣  unusual space" : "Checking for hidden characters…"
         case .done(let outcome): outcome.detail
         case .undone: "Your clipboard holds the original text again."
@@ -278,6 +328,7 @@ private struct PopupView: View {
     }
 
     private var previewKey: String {
+        if model.action == .reword { return "reword" }
         if case .done(let outcome) = model.stage, outcome.isSuccess { return "cleaned" }
         return "original"
     }
@@ -289,12 +340,33 @@ private struct PopupView: View {
     /// Before and during cleaning the hidden characters are drawn visibly; afterwards the
     /// cleaned text is shown as is.
     private var previewText: AttributedString? {
+        if model.action == .reword { return rewordPreview }
         if case .done(let outcome) = model.stage, outcome.isSuccess, let cleaned = model.cleanedPreview {
             var text = AttributedString(cleaned)
             text.foregroundColor = .white.opacity(0.88)
             return text
         }
         return model.originalPreview.map(Self.marked)
+    }
+
+    /// Streams the rewrite as it is written, keeping the newest lines in view.
+    private var rewordPreview: AttributedString? {
+        let succeeded = if case .done(let outcome) = model.stage { outcome.isSuccess } else { false }
+        let live = model.stage == .processing || succeeded
+        if live, let text = model.cleanedPreview, !text.isEmpty {
+            var result = AttributedString(model.stage == .processing ? Self.tail(text) : text)
+            result.foregroundColor = .white.opacity(0.88)
+            return result
+        }
+        return model.originalPreview.map {
+            var result = AttributedString($0)
+            result.foregroundColor = .white.opacity(0.4)
+            return result
+        }
+    }
+
+    private static func tail(_ text: String) -> String {
+        text.count > 320 ? "…" + text.suffix(320) : text
     }
 
     private static func marked(_ text: String) -> AttributedString {
@@ -355,16 +427,33 @@ private struct OutcomeIcon: View {
 }
 
 private struct PasteButtonStyle: ButtonStyle {
+    let prominent: Bool
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.black)
-            .frame(width: 230, height: 46)
-            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white))
+            .foregroundStyle(prominent ? .black : .white)
+            .frame(width: 200, height: 46)
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(prominent ? .white : .white.opacity(0.16)))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .animation(.smooth(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+private struct ChipButtonStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(selected ? .black : .white.opacity(0.75))
+            .padding(.horizontal, 11)
+            .frame(height: 24)
+            .background(Capsule().fill(selected ? .white.opacity(0.9) : .white.opacity(configuration.isPressed ? 0.2 : 0.1)))
+            .contentShape(Capsule())
+            .animation(.smooth(duration: 0.15), value: selected)
     }
 }
 

@@ -9,6 +9,7 @@ enum Preferences {
         static let monitorClipboard = "monitorClipboard"
         static let hoverToClean = "hoverToClean"
         static let normalizeSpaces = "normalizeSpaces"
+        static let rewordStyle = "rewordStyle"
     }
 
     private static let defaults: UserDefaults = {
@@ -34,6 +35,11 @@ enum Preferences {
     static var normalizeSpaces: Bool {
         get { defaults.bool(forKey: Key.normalizeSpaces) }
         set { defaults.set(newValue, forKey: Key.normalizeSpaces) }
+    }
+
+    static var rewordStyle: RewriteStyle {
+        get { defaults.string(forKey: Key.rewordStyle).flatMap(RewriteStyle.init(rawValue:)) ?? .paraphrase }
+        set { defaults.set(newValue.rawValue, forKey: Key.rewordStyle) }
     }
 
     static var cleaningOptions: CleaningOptions {

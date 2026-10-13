@@ -11,6 +11,11 @@ public enum CleanOutcome: Sendable, Equatable {
     case clipboardChanged
     /// A representation could not be read; nothing was written.
     case unreadable
+    /// Reworded by a language model; `divergence` is the share of word pairs that changed, 0...1.
+    case rewritten(divergence: Double)
+    case rewriteFailed(RewriteError)
+    /// The user stopped a reword; nothing was written.
+    case cancelled
 }
 
 /// Reads, cleans and rewrites a pasteboard. Only ever invoked from an explicit user action.
@@ -53,10 +58,14 @@ public final class ClipboardCleaner {
     }
 
     /// Step 1: checks the clipboard and copies its contents into memory.
-    public func prepare(expectedChangeCount: Int? = nil) -> Result<PasteboardSnapshot, CleanOutcome> {
+    /// - Parameter includingOwnWrite: also accept text Unmark itself just wrote, for example to
+    ///   reword text that was cleaned a moment ago.
+    public func prepare(
+        expectedChangeCount: Int? = nil, includingOwnWrite: Bool = false
+    ) -> Result<PasteboardSnapshot, CleanOutcome> {
         let changeCount = pasteboard.changeCount
         if let expectedChangeCount, expectedChangeCount != changeCount { return .failure(.clipboardChanged) }
-        if changeCount == lastWrittenChangeCount { return .failure(.alreadyClean) }
+        if changeCount == lastWrittenChangeCount && !includingOwnWrite { return .failure(.alreadyClean) }
 
         switch PasteboardTypes.classify(pasteboard.types?.map(\.rawValue)) {
         case .protected: return .failure(.protected)
@@ -85,6 +94,16 @@ public final class ClipboardCleaner {
         undoSnapshot = snapshot
         lastWrittenChangeCount = pasteboard.changeCount
         return .cleaned(removed: result.removedCount, replaced: result.replacedCount)
+    }
+
+    /// Replaces the clipboard with plain text derived from `snapshot`, unless the clipboard
+    /// changed in the meantime. Undo restores the snapshot.
+    public func commit(plainText: String, from snapshot: PasteboardSnapshot) -> Bool {
+        guard pasteboard.changeCount == snapshot.changeCount else { return false }
+        write([[PasteboardSnapshot.Entry(type: PasteboardTypes.plainUTF8, data: Data(plainText.utf8))]], markSource: true)
+        undoSnapshot = snapshot
+        lastWrittenChangeCount = pasteboard.changeCount
+        return true
     }
 
     /// Restores the exact bytes that were on the clipboard before the last clean.

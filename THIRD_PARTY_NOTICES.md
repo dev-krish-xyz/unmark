@@ -4,7 +4,11 @@ The text-cleaning rules in `Sources/UnmarkCore/UnicodeTables.swift` and
 `Sources/UnmarkCore/TextCleaner.swift` are a Swift port of `service/scripts/text_unicode.py`
 from [watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover), and
 `Tests/UnmarkCoreTests/TextCleanerTests.swift` ports test vectors from its
-`tests/test_clean_text.py`. That project is distributed under the following license:
+`tests/test_clean_text.py`. The reword prompts in `Sources/UnmarkCore/Rewriter.swift` are
+adapted from its `service/scripts/rewrite_text.py`, `Sources/UnmarkCore/HumanizePass.swift` is a
+port of `service/scripts/humanize_pass.py`, and `Tests/UnmarkCoreTests/RewriterTests.swift`
+ports vectors from `tests/test_humanize_pass.py`. That project is distributed under the following
+license:
 
 ```
 MIT License

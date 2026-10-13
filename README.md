@@ -2,9 +2,11 @@
 
 Unmark is a small native macOS utility. It removes invisible Unicode characters and look-alike spaces from text you copy. Copy something, move the cursor to the MacBook notch, click **Paste & Clean**, then press ⌘V anywhere.
 
+It can also **Reword** copied text with Apple's on-device model (Apple Intelligence, macOS 26 and later). Rewording changes word choice, which is the only thing that weakens statistical text watermarks. It is best-effort, and nothing leaves your Mac.
+
 - **Native**: Swift, SwiftUI and AppKit. A 270 KB download, no dependencies, about 19 MB of memory and effectively zero CPU when idle.
 - **Offline**: runs in the App Sandbox without any network entitlement, so macOS itself blocks network access. No telemetry.
-- **Deliberate**: hovering only opens the popup. The clipboard changes only when you click **Paste & Clean** (or choose *Clean Clipboard* in the menu bar).
+- **Deliberate**: hovering only opens the popup. The clipboard changes only when you click **Paste & Clean** or **Reword** (or choose them in the menu bar).
 - **Careful**: rich text keeps its formatting, and emoji, scripts that need joiners, bidirectional text and the Apple logo stay intact.
 
 ## How it works
@@ -18,6 +20,37 @@ Unmark is a small native macOS utility. It removes invisible Unicode characters 
 The popup never takes keyboard focus, so ⌘V goes to the app you were working in. Cleaning usually takes milliseconds. The clipboard is written the moment it finishes, and the activity bar stays visible for about half a second so you can see it.
 
 On Macs without a notch, on external displays, or with the lid closed, use **Clean Clipboard** in the menu bar item instead.
+
+## Reword
+
+**Reword** sits next to **Paste & Clean** in the popup (and in the menu bar as *Reword Clipboard*). It rewrites the copied text with Apple's on-device language model, streams the new text into the popup as it is written, and puts the result on the clipboard as plain text. **Cancel** stops it without touching the clipboard. **Undo** restores the original, formatting included.
+
+Pick a style under the buttons or from *Reword Style* in the menu:
+
+| Style | What it does |
+| --- | --- |
+| **Paraphrase** (default) | Same meaning with different words, clause order and sentence boundaries |
+| **Natural** | Plainer, less formulaic prose. Afterwards it straightens quotes, replaces em dashes with commas, and swaps filler such as "in order to" and "utilize" |
+| **Round-trip** | Translates to French (or to English for non-English text) and back |
+
+How it works:
+
+- The text is cleaned of hidden characters first, then split into paragraphs. Each paragraph goes to a fresh model session, so no earlier text is in context.
+- Paragraphs longer than about 1,200 characters are split at sentence boundaries.
+- Fenced code blocks, blank lines, surrounding whitespace and lines without letters are kept byte for byte and never sent to the model.
+- The prompt marks the copied text as a passage to transform, never as instructions to follow.
+- Answers that don't look like a rewrite (wrong length, empty, chatty preambles) are tidied up or retried once. If they still fail, the clipboard is left alone.
+- The popup shows how much of the phrasing changed: the share of word pairs from the original that no longer appear.
+- Prompts and the Natural cleanup are adapted from watermarks-remover's "Layer B" ([`rewrite_text.py`](https://github.com/guillaumemeyer/watermarks-remover/blob/main/service/scripts/rewrite_text.py), [`humanize_pass.py`](https://github.com/guillaumemeyer/watermarks-remover/blob/main/service/scripts/humanize_pass.py)). Unlike that project, Unmark never calls a remote API.
+
+Things to know:
+
+- **Read the result before you use it.** A rewrite can drop nuance, change emphasis or get a fact wrong, especially with Natural, which also tends to shorten text.
+- **No guarantee.** Statistical watermarks are detected by the provider with a secret key, so nobody outside the provider can confirm that a mark is gone. Published research shows that heavy paraphrasing lowers detection, but short or lightly reworded text can still be detectable.
+- **Use it honestly.** Reword is for text you own or are allowed to edit. Removing a watermark doesn't make AI-written text human-written. Don't use it to get around a school's, employer's or platform's rules on disclosing AI use.
+- Rewording needs a Mac with Apple Intelligence turned on. Unmark itself still runs on macOS 14, and the Reword button explains why it's unavailable.
+- Formatting is not kept, because the result is plain text. Up to 12,000 characters at a time. Each paragraph takes a few seconds.
+- Apple's model supports a limited set of languages and has its own safety filter, which can decline some text. In that case Unmark says so and changes nothing.
 
 ## What gets removed
 
@@ -45,10 +78,9 @@ Tabs, line breaks, trailing whitespace and ordinary text are never modified. If 
 
 ## Limitations
 
-- Text copied from ChatGPT, Claude and most other assistants usually contains **no** hidden characters, so Unmark reports *No hidden characters found*. That is the correct result, not a failure. The text watermarks these providers announced in 2026 (OpenAI's textGrain, Anthropic's SynthID-Text-based mark, Google's SynthID-Text) are **statistical**: they are a pattern in which words the model chose, with no hidden characters, and only the provider's detector can find them. Unmark cannot see or remove them, and does not try to.
-- Visible typography such as curly quotes, em dashes and ellipses is real text and is never changed.
-
-- Unmark removes **character-level** markers only. It does **not** detect or remove statistical watermarks such as SynthID-Text, which are embedded in word choice, and it does not rewrite or paraphrase anything. There is no guarantee that cleaned text is free of every watermark.
+- Text copied from ChatGPT, Claude and most other assistants usually contains **no** hidden characters, so **Paste & Clean** reports *No hidden characters found*. That is the correct result, not a failure. The text watermarks these providers announced in 2026 (OpenAI's textGrain, Anthropic's SynthID-Text-based mark, Google's SynthID-Text) are **statistical**: they are a pattern in which words the model chose, with no hidden characters, and only the provider's detector can find them. Cleaning cannot see or remove them. **Reword** changes the words themselves, which weakens such patterns but cannot be verified (see [Reword](#reword)).
+- **Paste & Clean** never changes visible typography such as curly quotes, em dashes and ellipses, because they are real text. (The Natural reword style does change them.)
+- Unmark cannot detect watermarks of either kind and makes no guarantee that any text is free of them.
 - Content that isn't text (images, files) and content marked as concealed or transient by password managers ([nspasteboard.org](http://nspasteboard.org)) is never read.
 - Clipboards larger than 20 MB are skipped.
 - A copied web archive (Safari's richest format) is dropped when its HTML or RTF needs cleaning, because it can't be rewritten safely. Apps then paste the cleaned HTML or RTF instead.
@@ -56,7 +88,8 @@ Tabs, line breaks, trailing whitespace and ordinary text are never modified. If 
 
 ## Privacy
 
-- While watching, Unmark reads only the clipboard's change counter and the list of data types. It reads the clipboard's **content** only when you click **Paste & Clean** or choose **Clean Clipboard**.
+- While watching, Unmark reads only the clipboard's change counter and the list of data types. It reads the clipboard's **content** only when you click **Paste & Clean** or **Reword**, or choose them in the menu bar.
+- **Reword** uses Apple's on-device model through the FoundationModels framework. The text is processed on your Mac. Unmark keeps no copy, and the app still has no network entitlement.
 - The original clipboard is kept in memory for undo. It is discarded when you copy something else, after 10 minutes, or when the screen locks, and is never written to disk.
 - On macOS 15.4 and later, macOS may ask whether Unmark can paste from other apps. You can set this under **System Settings › Privacy & Security › Paste from Other Apps**. If access is denied, Unmark shows *Clipboard access denied* and changes nothing.
 
@@ -76,7 +109,7 @@ The menu bar item has toggles for **Watch Clipboard**, **Open on Notch Hover**, 
 
 ## Development
 
-Building needs Swift 6 (Xcode 16 or later, or the Command Line Tools).
+Building needs Swift 6 (Xcode 16 or later, or the Command Line Tools). Reword is compiled in only with the macOS 26 SDK or later (Xcode 26); older SDKs build everything else.
 
 ```sh
 Scripts/test.sh                  # unit tests (Swift Testing)

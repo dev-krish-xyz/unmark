@@ -21,6 +21,14 @@ enum PopupStage: Equatable {
     case undone
 }
 
+/// What the popup's current or last run does.
+enum PopupAction: Equatable {
+    /// Remove hidden characters (Layer A).
+    case clean
+    /// Rewrite with the on-device model (Layer B).
+    case reword
+}
+
 /// Drives the flow: copy → ready → hover opens popup → Paste & Clean → live progress →
 /// cleaned text on the clipboard → ⌘V anywhere.
 @MainActor
@@ -50,13 +58,22 @@ final class AppModel {
     /// Whether the clipboard holds text at all (from its type list, not its contents).
     private(set) var clipboardHasText = false
     private(set) var lastOutcome: CleanOutcome?
+    private(set) var action: PopupAction = .clean
+    private(set) var rewordStyle = Preferences.rewordStyle
+    /// Nil when the on-device model can reword; otherwise why not.
+    private(set) var rewordUnavailableReason: String?
+    private(set) var rewordProgress: RewriteProgress?
+    private(set) var isBusy = false
 
     @ObservationIgnored let cleaner = ClipboardCleaner()
     @ObservationIgnored private let monitor = ClipboardMonitor()
     @ObservationIgnored private var openTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
-    @ObservationIgnored private var isCleaning = false
+    @ObservationIgnored private var isCleaning = false {
+        didSet { isBusy = isCleaning }
+    }
+    @ObservationIgnored private var rewordTask: Task<Void, Never>?
     @ObservationIgnored private var finishedAt: ContinuousClock.Instant?
     @ObservationIgnored var onOutcome: ((CleanOutcome) -> Void)?
     @ObservationIgnored var onIslandChange: ((Island) -> Void)?
@@ -129,11 +146,17 @@ final class AppModel {
     private func openPopup() {
         toastTask?.cancel()
         refreshPendingState()
+        rewordUnavailableReason = OnDeviceModel.unavailableReason
+        if !isCleaning { resetStage() }
+        island = .popup
+    }
+
+    private func resetStage() {
         stage = .idle
         progress = 0
         originalPreview = nil
         cleanedPreview = nil
-        island = .popup
+        rewordProgress = nil
     }
 
     /// Called when the cursor has left the popup. Never interrupts a running clean, and keeps
@@ -146,9 +169,7 @@ final class AppModel {
 
     func closePopup() {
         guard island == .popup, !isCleaning else { return }
-        stage = .idle
-        originalPreview = nil
-        cleanedPreview = nil
+        resetStage()
         finishedAt = nil
         island = hasPendingText ? .ready : .hidden
     }
@@ -165,6 +186,24 @@ final class AppModel {
         Task { await run(inPopup: island == .popup) }
     }
 
+    /// The popup's Reword button: rewrite the copied text with the on-device model.
+    func pasteAndReword() {
+        rewordTask = Task { await reword(inPopup: true) }
+    }
+
+    func rewordFromMenu() {
+        rewordTask = Task { await reword(inPopup: island == .popup) }
+    }
+
+    func cancelReword() {
+        rewordTask?.cancel()
+    }
+
+    func setRewordStyle(_ style: RewriteStyle) {
+        Preferences.rewordStyle = style
+        rewordStyle = style
+    }
+
     func undo() {
         guard cleaner.undo() else { return }
         // The restored text still carries its markers, so it is ready to clean again.
@@ -179,12 +218,11 @@ final class AppModel {
     private func run(inPopup: Bool) async {
         guard !isCleaning else { return }
         isCleaning = true
+        action = .clean
         let started = ContinuousClock.now
         if inPopup {
+            resetStage()
             stage = .processing
-            progress = 0
-            originalPreview = nil
-            cleanedPreview = nil
         }
 
         let options = Preferences.cleaningOptions
@@ -215,9 +253,59 @@ final class AppModel {
         finish(outcome, inPopup: inPopup)
     }
 
+    private func reword(inPopup: Bool) async {
+        guard !isCleaning else { return }
+        isCleaning = true
+        action = .reword
+        if inPopup {
+            resetStage()
+            stage = .processing
+        }
+        let outcome = await rewordOutcome(inPopup: inPopup)
+        if inPopup { progress = 1 }
+        rewordTask = nil
+        isCleaning = false
+        finish(outcome, inPopup: inPopup)
+    }
+
+    private func rewordOutcome(inPopup: Bool) async -> CleanOutcome {
+        guard let model = OnDeviceModel.make() else {
+            return .rewriteFailed(.unavailable(OnDeviceModel.unavailableReason ?? "Reword isn’t available."))
+        }
+        let snapshot: PasteboardSnapshot
+        switch cleaner.prepare(includingOwnWrite: true) {
+        case .failure(let failure): return failure
+        case .success(let value): snapshot = value
+        }
+        guard let text = snapshot.plainText else { return .noText }
+        if inPopup { originalPreview = Self.preview(text) }
+
+        let result: RewriteResult
+        do {
+            result = try await Rewriter(model: model).rewrite(
+                text, style: rewordStyle, cleaning: Preferences.cleaningOptions
+            ) { [weak self] update in
+                guard let self, inPopup else { return }
+                self.rewordProgress = update
+                self.progress = max(self.progress, update.fraction)
+                if !update.text.isEmpty { self.cleanedPreview = Self.preview(update.text) }
+            }
+        } catch is CancellationError {
+            return .cancelled
+        } catch let error as RewriteError {
+            return .rewriteFailed(error)
+        } catch {
+            return .rewriteFailed(.failed(error.localizedDescription))
+        }
+        if Task.isCancelled { return .cancelled }
+        guard cleaner.commit(plainText: result.text, from: snapshot) else { return .clipboardChanged }
+        if inPopup { cleanedPreview = Self.preview(result.text) }
+        return .rewritten(divergence: result.divergence)
+    }
+
     private func finish(_ outcome: CleanOutcome, inPopup: Bool) {
         switch outcome {
-        case .cleaned:
+        case .cleaned, .rewritten:
             undoExpiryTask?.cancel()
             undoExpiryTask = Task { [weak self] in
                 try? await Task.sleep(for: Self.undoLifetime)
@@ -229,13 +317,13 @@ final class AppModel {
             setPending(false)
         case .clipboardChanged:
             refreshPendingState()
-        case .tooLarge, .accessDenied, .unreadable:
+        case .tooLarge, .accessDenied, .unreadable, .rewriteFailed, .cancelled:
             break
         }
 
         lastOutcome = outcome
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
-            .announcement: outcome.isSuccess ? "\(outcome.message). Cleaned text is on the clipboard." : outcome.message,
+            .announcement: outcome.isSuccess ? "\(outcome.message). The result is on the clipboard." : outcome.message,
             .priority: NSAccessibilityPriorityLevel.high.rawValue,
         ])
         onOutcome?(outcome)
@@ -275,6 +363,18 @@ extension CleanOutcome {
         case .accessDenied: return "Clipboard access denied"
         case .clipboardChanged: return "Clipboard changed"
         case .unreadable: return "Couldn’t read clipboard"
+        case let .rewritten(divergence): return "Reworded · \(Int((divergence * 100).rounded()))% of phrasing changed"
+        case .cancelled: return "Reword cancelled"
+        case .rewriteFailed(let error):
+            switch error {
+            case .unavailable: return "Reword unavailable"
+            case .tooLong: return "Too long to reword"
+            case .nothingToRewrite: return "Nothing to reword"
+            case .declined: return "The model declined this text"
+            case .unsupportedLanguage: return "Language not supported"
+            case .busy: return "Model busy"
+            case .unusableOutput, .failed: return "Reword didn’t work"
+            }
         }
     }
 
@@ -288,17 +388,33 @@ extension CleanOutcome {
         case .accessDenied: "Allow Unmark under Privacy & Security › Paste from Other Apps."
         case .clipboardChanged: "Something new was copied while cleaning. Nothing was changed."
         case .unreadable: "The app that copied this text may have quit."
+        case .rewritten: "Plain text is on your clipboard. Read it before you use it: meaning can shift."
+        case .cancelled: "Your clipboard is unchanged."
+        case .rewriteFailed(let error):
+            switch error {
+            case .unavailable(let reason): reason
+            case .tooLong: "Reword handles up to \(Rewriter.maximumCharacters.formatted()) characters at a time."
+            case .nothingToRewrite: "The copied text has no sentences to rewrite."
+            case .declined: "Apple’s on-device model wouldn’t rewrite it. Your clipboard is unchanged."
+            case .unsupportedLanguage: "Apple Intelligence can’t rewrite this language yet."
+            case .busy: "Apple’s on-device model is busy. Try again in a moment."
+            case .unusableOutput: "The model’s answer didn’t look like a rewrite, so nothing changed."
+            case .failed(let message): message
+            }
         }
     }
 
     var isSuccess: Bool {
-        if case .cleaned = self { return true }
-        return false
+        switch self {
+        case .cleaned, .rewritten: true
+        default: false
+        }
     }
 
     var isProblem: Bool {
         switch self {
         case .tooLarge, .accessDenied, .unreadable, .clipboardChanged: true
+        case .rewriteFailed(let error): error != .nothingToRewrite
         default: false
         }
     }
