@@ -268,7 +268,7 @@ extension CleanOutcome {
             case (0, _): return "Fixed \(replaced) \(replaced == 1 ? "space" : "spaces")"
             default: return "Removed \(removed) · fixed \(replaced) \(replaced == 1 ? "space" : "spaces")"
             }
-        case .alreadyClean: return "Already clean"
+        case .alreadyClean: return "No hidden characters found"
         case .noText: return "No text to clean"
         case .protected: return "Protected content skipped"
         case .tooLarge: return "Too large to clean"
@@ -281,7 +281,7 @@ extension CleanOutcome {
     var detail: String {
         switch self {
         case .cleaned: "Cleaned text is on your clipboard. Press ⌘V to paste it anywhere."
-        case .alreadyClean: "Nothing hidden was found. Your clipboard was left as is."
+        case .alreadyClean: "Nothing to remove. Visible punctuation such as “quotes” and — dashes is kept."
         case .noText: "Copy some text first, then try again."
         case .protected: "This came from a password manager, so Unmark didn’t read it."
         case .tooLarge: "Clipboards over 20 MB are skipped."

@@ -41,20 +41,44 @@ struct NotchView: View {
     var body: some View {
         let island = model.island
         let size = metrics.bodySize(for: island)
+        let shape = NotchShape(ear: IslandMetrics.ear, bottomRadius: metrics.bottomRadius(for: island))
         ZStack(alignment: .top) {
-            NotchShape(ear: IslandMetrics.ear, bottomRadius: metrics.bottomRadius(for: island))
-                .fill(.black)
-                .frame(width: size.width + IslandMetrics.ear * 2, height: size.height)
+            Color.black
+            // Content is laid out at its final size and revealed by the growing island, so text
+            // never re-wraps mid-animation.
             content(for: island)
                 .frame(width: size.width, height: size.height, alignment: .top)
-                .clipped()
+                .animation(nil, value: island)
+        }
+        .frame(width: metrics.canvas.width, height: metrics.canvas.height, alignment: .top)
+        .mask(alignment: .top) {
+            shape.frame(width: size.width + IslandMetrics.ear * 2, height: size.height)
         }
         .opacity(island == .hidden ? 0 : 1)
-        .frame(width: metrics.canvas.width, height: metrics.canvas.height, alignment: .top)
-        .animation(reduceMotion ? .easeInOut(duration: 0.12) : .spring(response: 0.36, dampingFraction: 0.86), value: island)
-        .animation(.easeInOut(duration: 0.2), value: model.stage)
+        .animation(animation(for: island), value: island)
+        .animation(.smooth(duration: 0.25), value: model.stage)
         .environment(\.colorScheme, .dark)
         .accessibilityHidden(island != .popup)
+    }
+
+    /// Opening settles with a slight bounce, like the Dynamic Island; closing is quicker and flat.
+    private func animation(for island: Island) -> Animation {
+        if reduceMotion { return .easeInOut(duration: 0.15) }
+        switch island {
+        case .popup: return .spring(duration: 0.5, bounce: 0.2)
+        case .toast: return .spring(duration: 0.42, bounce: 0.18)
+        case .ready, .hidden: return .spring(duration: 0.36, bounce: 0.04)
+        }
+    }
+
+    /// Content fades in once the island has mostly opened and leaves quickly.
+    private var contentTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                .animation(.easeOut(duration: 0.24).delay(0.12)),
+            removal: .opacity.animation(.easeIn(duration: 0.1))
+        )
     }
 
     @ViewBuilder
@@ -74,7 +98,7 @@ struct NotchView: View {
             }
             .padding(.horizontal, 9)
             .frame(height: metrics.notch.height)
-            .transition(.opacity)
+            .transition(contentTransition)
         case .toast(let outcome):
             VStack(spacing: 0) {
                 Spacer().frame(height: metrics.notch.height)
@@ -86,10 +110,10 @@ struct NotchView: View {
                 .lineLimit(1)
                 .frame(height: IslandMetrics.toastRow - 4)
             }
-            .transition(.opacity)
+            .transition(contentTransition)
         case .popup:
             PopupView(model: model, metrics: metrics, reduceMotion: reduceMotion)
-                .transition(.opacity)
+                .transition(contentTransition)
         }
     }
 }
@@ -336,10 +360,11 @@ private struct PasteButtonStyle: ButtonStyle {
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.black)
             .frame(width: 230, height: 46)
-            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white))
+            .background(RoundedRectangle(cornerRadius: 19, style: .continuous).fill(.white))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+            .animation(.smooth(duration: 0.15), value: configuration.isPressed)
     }
 }
 

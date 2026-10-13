@@ -41,9 +41,11 @@ What is preserved, because removing it would change visible or meaningful text:
 - **Private Use Area characters**, such as the Apple logo (U+F8FF), SF Symbols and Nerd Font glyphs. watermarks-remover strips these. Unmark keeps them because they turn up in real Mac and terminal text.
 - `&nbsp;` and literal no-break spaces in **HTML**, where they control layout
 
-Tabs, line breaks, trailing whitespace and ordinary text are never modified. If nothing needs removing, Unmark leaves the clipboard untouched and shows *Already clean*.
+Tabs, line breaks, trailing whitespace and ordinary text are never modified. If nothing needs removing, Unmark leaves the clipboard untouched and shows *No hidden characters found*.
 
 ## Limitations
+
+- Text copied from ChatGPT, Claude and most other assistants today usually contains **no** hidden characters, so Unmark reports *No hidden characters found*. That is the correct result, not a failure. Visible typography such as curly quotes, em dashes and ellipses is real text and is never changed.
 
 - Unmark removes **character-level** markers only. It does **not** detect or remove statistical watermarks such as SynthID-Text, which are embedded in word choice, and it does not rewrite or paraphrase anything. There is no guarantee that cleaned text is free of every watermark.
 - Content that isn't text (images, files) and content marked as concealed or transient by password managers ([nspasteboard.org](http://nspasteboard.org)) is never read.
