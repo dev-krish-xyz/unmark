@@ -151,8 +151,10 @@ private func string(_ codePoints: UInt32...) -> String {
     }
 
     @Test func reservedDefaultIgnorables() {
-        let codePoints: [UInt32] = [0x2065, 0xE0000] + Array(0xFFF0...0xFFF8)
-            + Array(0xE0080...0xE00FF) + Array(0xE01F0...0xE0FFF)
+        var codePoints: [UInt32] = [0x2065, 0xE0000]
+        codePoints += Array(UInt32(0xFFF0)...UInt32(0xFFF8))
+        codePoints += Array(UInt32(0xE0080)...UInt32(0xE00FF))
+        codePoints += Array(UInt32(0xE01F0)...UInt32(0xE0FFF))
         for cp in codePoints {
             let result = clean("word" + string(cp) + "word")
             #expect(result.text == "wordword", "U+\(String(cp, radix: 16))")
@@ -187,8 +189,10 @@ private func string(_ codePoints: UInt32...) -> String {
     }
 
     @Test func noncharacters() {
-        let codePoints = Array(UInt32(0xFDD0)...0xFDEF) + (0...0x10).flatMap { plane in
-            [UInt32(plane) << 16 | 0xFFFE, UInt32(plane) << 16 | 0xFFFF]
+        var codePoints = Array(UInt32(0xFDD0)...UInt32(0xFDEF))
+        for plane in UInt32(0)...UInt32(0x10) {
+            codePoints.append(plane << 16 | 0xFFFE)
+            codePoints.append(plane << 16 | 0xFFFF)
         }
         #expect(codePoints.count == 66)
         for cp in codePoints {
