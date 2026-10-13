@@ -16,8 +16,11 @@ struct NotchGeometry: Equatable {
             let width = frame.width - left.width - right.width
             let height = screen.safeAreaInsets.top
             guard width > 0 else { continue }
-            let rect = CGRect(x: frame.minX + left.width, y: frame.maxY - height, width: width, height: height)
-            return NotchGeometry(screenID: id, rect: rect.integral)
+            // Round inward so the sensor never overlaps usable menu bar pixels.
+            let minX = (frame.minX + left.width).rounded(.up)
+            let maxX = (frame.minX + left.width + width).rounded(.down)
+            let rect = CGRect(x: minX, y: frame.maxY - height, width: maxX - minX, height: height)
+            return NotchGeometry(screenID: id, rect: rect)
         }
         return nil
     }
@@ -97,7 +100,9 @@ final class NotchController {
                                   width: canvas.width, height: canvas.height)
         let display = IslandPanel(frame: displayFrame)
         display.ignoresMouseEvents = true
-        display.contentView = NSHostingView(rootView: NotchView(model: model, metrics: metrics))
+        let hosting = NSHostingView(rootView: NotchView(model: model, metrics: metrics))
+        hosting.sizingOptions = []
+        display.contentView = hosting
         display.orderFrontRegardless()
         self.display = display
 

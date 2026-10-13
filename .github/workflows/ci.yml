@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Test
+        run: Scripts/test.sh
+      - name: Build app (universal)
+        run: UNIVERSAL=1 Scripts/build-app.sh
+      - name: Check bundle
+        run: |
+          codesign --verify --strict build/Unmark.app
+          codesign -d --entitlements - build/Unmark.app | tee entitlements.txt
+          # Offline by construction: sandboxed with no network entitlement.
+          ! grep -q "network" entitlements.txt
+          lipo -archs build/Unmark.app/Contents/MacOS/Unmark

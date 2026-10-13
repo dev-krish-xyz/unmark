@@ -20,6 +20,8 @@ final class AppModel {
     static let dwell: Duration = .milliseconds(280)
     static let processingDelay: Duration = .milliseconds(120)
     static let resultDuration: Duration = .milliseconds(1700)
+    /// The pre-clean clipboard is held in memory only this long.
+    static let undoLifetime: Duration = .seconds(600)
 
     private(set) var phase: IslandPhase = .hidden
     private(set) var hasPendingText = false
@@ -31,6 +33,7 @@ final class AppModel {
     @ObservationIgnored private var pendingChangeCount: Int?
     @ObservationIgnored private var dwellTask: Task<Void, Never>?
     @ObservationIgnored private var collapseTask: Task<Void, Never>?
+    @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var isCleaning = false
     /// Called after every completed clean so the menu bar can reflect it.
     @ObservationIgnored var onOutcome: ((CleanOutcome) -> Void)?
@@ -101,7 +104,8 @@ final class AppModel {
     }
 
     func hoverEnded() {
-        guard phase == .dwelling else { return }
+        // Once the dwell completed, the clean runs to completion and shows its result.
+        guard phase == .dwelling, !isCleaning else { return }
         dwellTask?.cancel()
         dwellTask = nil
         phase = hasPendingText ? .ready : .hidden
@@ -123,6 +127,15 @@ final class AppModel {
         let outcome = await cleaner.clean(options: Preferences.cleaningOptions, expectedChangeCount: expectedChangeCount)
         indicator.cancel()
         isCleaning = false
+
+        if case .cleaned = outcome {
+            undoExpiryTask?.cancel()
+            undoExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.undoLifetime)
+                guard !Task.isCancelled else { return }
+                self?.cleaner.forgetUndo()
+            }
+        }
 
         switch outcome {
         case .cleaned, .alreadyClean, .noText, .protected:

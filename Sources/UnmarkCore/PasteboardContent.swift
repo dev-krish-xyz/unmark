@@ -171,11 +171,10 @@ public enum PasteboardTextCleaner {
         return (output, result.removedCount + removedReferences, result.replacedCount)
     }
 
-    private static let referencePattern =
-        try! NSRegularExpression(pattern: "&(?:#[xX]([0-9A-Fa-f]{1,6})|#([0-9]{1,7})|(shy|ZeroWidthSpace|NoBreak));")
-
     static func stripCharacterReferences(_ html: String) -> (String, Int) {
-        guard html.contains("&") else { return (html, 0) }
+        guard html.contains("&"), let referencePattern = try? NSRegularExpression(
+            pattern: "&(?:#[xX]([0-9A-Fa-f]{1,6})|#([0-9]{1,7})|(shy|ZeroWidthSpace|NoBreak));"
+        ) else { return (html, 0) }
         let source = html as NSString
         var result = ""
         var cursor = 0

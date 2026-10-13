@@ -102,10 +102,18 @@ public final class ClipboardCleaner {
                 if bytes > Self.maximumBytes { return .failure(.tooLarge) }
                 entries.append(PasteboardSnapshot.Entry(type: type.rawValue, data: data))
             }
-            guard !entries.isEmpty else { return .failure(.unreadable) }
+            guard !entries.isEmpty else { return .failure(readFailure) }
             copied.append(entries)
         }
         return .success(PasteboardSnapshot(items: copied, changeCount: changeCount))
+    }
+
+    /// Nothing readable usually means the user declined the system paste prompt.
+    private var readFailure: CleanOutcome {
+        if #available(macOS 15.4, *), pasteboard.accessBehavior != .alwaysAllow {
+            return .accessDenied
+        }
+        return .unreadable
     }
 
     private func write(_ items: [[PasteboardSnapshot.Entry]], markSource: Bool) {

@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMonitoring() {
         if isAsleep || isLocked {
             model.stopMonitoring()
+            model.cleaner.forgetUndo()
         } else {
             model.startMonitoring()
             notch.update()
