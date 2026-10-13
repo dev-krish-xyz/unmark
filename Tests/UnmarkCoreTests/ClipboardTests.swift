@@ -171,6 +171,39 @@ private func rtf(_ text: NSAttributedString) -> Data {
         #expect(pasteboard.string(forType: .string) == "Bold and link")
     }
 
+    /// AppKit's own writer adds legacy alias types (NSStringPboardType, CorePasteboardFlavorType …).
+    @Test func attributedStringWrittenByAppKit() async throws {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let styled = NSMutableAttributedString(string: "Bold\u{200B} text", attributes: [.font: NSFont.boldSystemFont(ofSize: 18)])
+        pasteboard.clearContents()
+        pasteboard.writeObjects([styled])
+
+        let outcome = await ClipboardCleaner(pasteboard: pasteboard).clean(options: options)
+
+        #expect(outcome == .cleaned(removed: 1, replaced: 0))
+        #expect(pasteboard.string(forType: .string) == "Bold text")
+        let data = try #require(pasteboard.data(forType: .rtf))
+        #expect(NSAttributedString(rtf: data, documentAttributes: nil)?.string == "Bold text")
+        #expect(pasteboard.data(forType: NSPasteboard.PasteboardType("public.utf16-external-plain-text"))
+            .flatMap { String(data: $0, encoding: .utf16) } == "Bold text")
+    }
+
+    /// The copying app quit before fulfilling a promised type: that type reads as nil for everyone.
+    @Test func unfulfillablePromisesAreSkipped() async {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let provider = SilentProvider()
+        let item = NSPasteboardItem()
+        item.setString("promise\u{200B}d", forType: .string)
+        item.setDataProvider(provider, forTypes: [NSPasteboard.PasteboardType("public.utf16-external-plain-text")])
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+
+        #expect(await ClipboardCleaner(pasteboard: pasteboard).clean(options: options) == .cleaned(removed: 1, replaced: 0))
+        #expect(pasteboard.string(forType: .string) == "promised")
+    }
+
     @Test func untouchedRichTextKeepsOriginalBytes() async {
         let pasteboard = makePasteboard()
         defer { pasteboard.releaseGlobally() }
@@ -262,4 +295,8 @@ private func rtf(_ text: NSAttributedString) -> Data {
         monitor.poll()
         #expect(changes.last?.content == .other)
     }
+}
+
+private final class SilentProvider: NSObject, NSPasteboardItemDataProvider {
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {}
 }

@@ -95,11 +95,14 @@ public final class ClipboardCleaner {
         for item in items {
             var entries: [PasteboardSnapshot.Entry] = []
             for type in item.types {
-                guard let data = item.data(forType: type) else { return .failure(.unreadable) }
+                // A promise whose provider has quit reads as nil for every app, so leaving it
+                // out loses nothing.
+                guard let data = item.data(forType: type) else { continue }
                 bytes += data.count
                 if bytes > Self.maximumBytes { return .failure(.tooLarge) }
                 entries.append(PasteboardSnapshot.Entry(type: type.rawValue, data: data))
             }
+            guard !entries.isEmpty else { return .failure(.unreadable) }
             copied.append(entries)
         }
         return .success(PasteboardSnapshot(items: copied, changeCount: changeCount))
