@@ -67,6 +67,11 @@ public enum TextCleaner {
         for (index, scalar) in scalars.enumerated() {
             let width = scalar.utf16.count
             defer { offset += width }
+            if !isCandidate(scalar.value) {
+                prevKept = scalar
+                previousSurvived = true
+                continue
+            }
             let prev = index > 0 && previousSurvived ? scalars[index - 1] : nil
             let next = index + 1 < scalars.count ? scalars[index + 1] : nil
             let decision = decide(
@@ -196,7 +201,7 @@ public enum TextCleaner {
         return .invisible
     }
 
-    /// Cheap prefilter: false means the scalar is kept under every option set.
+    /// Cheap prefilter: false means the scalar is kept under every option set and is not glue.
     private static func isCandidate(_ cp: UInt32) -> Bool {
         if cp < 0xA0 { return false }
         if (0x4E00...0x9FFF).contains(cp) || (0xAC00...0xD7A3).contains(cp) { return false }

@@ -323,6 +323,7 @@ private func string(_ codePoints: UInt32...) -> String {
         let clock = ContinuousClock()
         let elapsed = clock.measure { _ = TextCleaner.clean(paragraph) }
         #expect(clean(paragraph).removedCount == 20_000)
-        #expect(elapsed < .seconds(2))
+        // Guards against non-linear behavior; generous because tests run unoptimized on shared CI.
+        #expect(elapsed < .seconds(5))
     }
 }
