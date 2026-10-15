@@ -2,10 +2,12 @@
 
 Unmark is a small native macOS utility. It removes invisible Unicode characters and look-alike spaces from text you copy. Copy something, move the cursor to the MacBook notch, click **Paste & Clean**, then press ⌘V anywhere.
 
+It also strips metadata from images: drop a JPEG, PNG or WebP on the notch to remove C2PA "made with AI" credentials, EXIF, GPS location, XMP and embedded prompts, without re-encoding a single pixel.
+
 It can also **Reword** copied text with Apple's on-device model (Apple Intelligence, macOS 26 and later). Rewording changes word choice, which is the only thing that weakens statistical text watermarks. It is best-effort, and nothing leaves your Mac.
 
 - **Native**: Swift, SwiftUI and AppKit. A 270 KB download, no dependencies, about 19 MB of memory and effectively zero CPU when idle.
-- **Offline**: runs in the App Sandbox without any network entitlement, so macOS itself blocks network access. No telemetry.
+- **Offline**: runs in the App Sandbox without any network entitlement, so macOS itself blocks network access. No telemetry. Its only file access is to images you drop and to Downloads.
 - **Deliberate**: hovering only opens the popup. The clipboard changes only when you click **Paste & Clean** or **Reword** (or choose them in the menu bar).
 - **Careful**: rich text keeps its formatting, and emoji, scripts that need joiners, bidirectional text and the Apple logo stay intact.
 
@@ -20,6 +22,29 @@ It can also **Reword** copied text with Apple's on-device model (Apple Intellige
 The popup never takes keyboard focus, so ⌘V goes to the app you were working in. Cleaning usually takes milliseconds. The clipboard is written the moment it finishes, and the activity bar stays visible for about half a second so you can see it.
 
 On Macs without a notch, on external displays, or with the lid closed, use **Clean Clipboard** in the menu bar item instead.
+
+## Strip image metadata
+
+Drag one or more images onto the notch. The popup opens and turns into a drop zone. Drop them, and Unmark saves a clean copy of each to **Downloads** as `name (clean).jpg` and puts the copies on the clipboard, so ⌘V attaches them in X, Slack, Mail and so on. Originals are never changed. Without a notch, use **Strip Image Metadata…** in the menu bar, which reveals the copies in Finder.
+
+| Removed | Where it lives |
+| --- | --- |
+| **C2PA Content Credentials**, the provenance manifest that ChatGPT/DALL·E, Gemini, Firefly and others attach | JPEG APP11 (JUMBF), PNG `caBX`, WebP `C2PA` |
+| EXIF, including camera, serial numbers, timestamps and **GPS location** | JPEG APP1, PNG `eXIf`, WebP `EXIF` |
+| XMP (often names the AI tool, e.g. `trainedAlgorithmicMedia`) | JPEG APP1, PNG `iTXt`, WebP `XMP ` |
+| IPTC / Photoshop data, comments | JPEG APP13, COM |
+| Text chunks, where Stable Diffusion and ComfyUI store the full prompt and settings | PNG `tEXt` / `zTXt` / `iTXt` |
+| Data after the end of the image (thumbnails, HDR gain maps, trailers) | after JPEG EOI / PNG IEND |
+
+How it stays safe:
+
+- **Lossless.** Unmark walks the file's segments and copies the compressed image data byte for byte. Nothing is decoded or re-encoded, and tests check the decoded pixels are identical.
+- Kept on purpose: colour profiles (ICC), JFIF and Adobe colour info, PNG gamma/sRGB/transparency/DPI, and animation chunks.
+- A rotated photo keeps its orientation: Unmark writes a minimal EXIF block holding only the orientation flag.
+- The popup says when the removed metadata identified an AI generator ("Removed AI provenance").
+- Verified against the C2PA project's own signed sample images: credentials gone, pixels identical, and a second pass changes nothing.
+
+Limits: JPEG, PNG and WebP only (HEIC, TIFF, PDF and video are not yet supported). An HDR photo's gain map is removed with the other appended data, so it shows as standard range. **Invisible pixel watermarks** such as Google's SynthID for images, which are baked into the pixels, are not touched. Removing provenance doesn't change who made an image. Follow the rules of wherever you post it.
 
 ## Reword
 
@@ -89,6 +114,7 @@ Tabs, line breaks, trailing whitespace and ordinary text are never modified. If 
 ## Privacy
 
 - While watching, Unmark reads only the clipboard's change counter and the list of data types. It reads the clipboard's **content** only when you click **Paste & Clean** or **Reword**, or choose them in the menu bar.
+- Image metadata stripping reads only the files you drop or pick, and writes only to Downloads (the sandbox allows exactly that folder). It never reads the clipboard; it replaces it with the clean copies, which can't be undone from Unmark.
 - **Reword** uses Apple's on-device model through the FoundationModels framework. The text is processed on your Mac. Unmark keeps no copy, and the app still has no network entitlement.
 - The original clipboard is kept in memory for undo. It is discarded when you copy something else, after 10 minutes, or when the screen locks, and is never written to disk.
 - On macOS 15.4 and later, macOS may ask whether Unmark can paste from other apps. You can set this under **System Settings › Privacy & Security › Paste from Other Apps**. If access is denied, Unmark shows *Clipboard access denied* and changes nothing.

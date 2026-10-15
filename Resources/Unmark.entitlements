@@ -5,5 +5,8 @@
 	<!-- Sandboxed with no network entitlement: the OS itself prevents any network access. -->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Clean copies of dropped images are saved to Downloads. -->
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
 </dict>
 </plist>

@@ -50,6 +50,20 @@ private final class IslandPanel: NSPanel {
 /// Fills exactly the camera housing (pixels that do not exist), so it never covers menu bar items.
 private final class SensorView: NSView {
     var onHoverChange: ((Bool) -> Void)?
+    var onDragEnter: (() -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    // A file dragged to the notch opens the popup, which then takes the drop.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        onDragEnter?()
+        return .copy
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -71,7 +85,29 @@ private final class SensorView: NSView {
 /// Lets the first click on the popup's button work without activating Unmark, so keyboard
 /// focus (and ⌘V) stays in the app the user is working in.
 private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    var onDrag: ((Bool) -> Void)?
+    var onDrop: (([URL]) -> Void)?
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // Image files dropped on the open popup get their metadata stripped.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        onDrag?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { .copy }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        onDrag?(false)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        onDrop?(urls)
+        return !urls.isEmpty
+    }
 }
 
 /// Owns the two notch panels: a hover sensor over the camera housing, and the island display.
@@ -115,6 +151,9 @@ final class NotchController {
         display.ignoresMouseEvents = true
         let hosting = FirstMouseHostingView(rootView: NotchView(model: model, metrics: metrics))
         hosting.sizingOptions = []
+        hosting.registerForDraggedTypes([.fileURL])
+        hosting.onDrag = { [weak self] inside in inside ? self?.model.dropEntered() : self?.model.dropExited() }
+        hosting.onDrop = { [weak self] urls in self?.model.stripFiles(urls) }
         display.contentView = hosting
         display.orderFrontRegardless()
         self.display = display
@@ -126,6 +165,7 @@ final class NotchController {
             guard let self else { return }
             inside ? self.model.hoverBegan() : self.model.hoverEnded()
         }
+        view.onDragEnter = { [weak self] in self?.model.dropEntered() }
         sensor.contentView = view
         self.sensor = sensor
         applyHoverPreference()

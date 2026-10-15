@@ -7,7 +7,9 @@ from [watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover),
 `tests/test_clean_text.py`. The reword prompts in `Sources/UnmarkCore/Rewriter.swift` are
 adapted from its `service/scripts/rewrite_text.py`, `Sources/UnmarkCore/HumanizePass.swift` is a
 port of `service/scripts/humanize_pass.py`, and `Tests/UnmarkCoreTests/RewriterTests.swift`
-ports vectors from `tests/test_humanize_pass.py`. That project is distributed under the following
+ports vectors from `tests/test_humanize_pass.py`. The image metadata stripper in
+`Sources/UnmarkCore/MetadataStripper.swift` is an independent Swift implementation that follows the
+scope of that project's image metadata cleaning (C2PA, EXIF, XMP, IPTC, text chunks). That project is distributed under the following
 license:
 
 ```

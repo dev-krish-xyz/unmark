@@ -14,6 +14,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private lazy var rewordItem = menuItem("Reword Clipboard", #selector(reword))
     private lazy var styleItem = NSMenuItem(title: "Reword Style", action: nil, keyEquivalent: "")
     private lazy var undoItem = menuItem("Undo", #selector(undo))
+    private lazy var stripItem = menuItem("Strip Image Metadata…", #selector(stripImages))
     private lazy var monitorItem = menuItem("Watch Clipboard", #selector(toggleMonitor))
     private lazy var hoverItem = menuItem("Open on Notch Hover", #selector(toggleHover))
     private lazy var spacesItem = menuItem("Normalize Unusual Spaces", #selector(toggleSpaces))
@@ -36,7 +37,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             styles.addItem(item)
         }
         styleItem.submenu = styles
-        for entry in [statusLine, .separator(), cleanItem, rewordItem, styleItem, undoItem, .separator(),
+        for entry in [statusLine, .separator(), cleanItem, rewordItem, styleItem, undoItem, .separator(), stripItem, .separator(),
                       monitorItem, hoverItem, spacesItem, loginItem, .separator(),
                       menuItem("About Unmark", #selector(about)),
                       menuItem("Quit Unmark", #selector(quit), key: "q")] {
@@ -67,6 +68,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         statusLine.title = model.isBusy ? "Working…" : model.lastOutcome.map { "Last: \($0.message)" }
             ?? (model.hasPendingText ? "Copied text ready to clean" : "Copy text, then hover over the notch")
         cleanItem.isEnabled = !model.isBusy
+        stripItem.isEnabled = !model.isBusy
         let unavailable = OnDeviceModel.unavailableReason
         rewordItem.isEnabled = !model.isBusy && unavailable == nil
         rewordItem.toolTip = unavailable ?? "Rewrites the copied text with Apple’s on-device model"
@@ -104,6 +106,19 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func reword() {
         model.rewordFromMenu()
+    }
+
+    @objc private func stripImages() {
+        NSApp.activate()
+        let panel = NSOpenPanel()
+        panel.title = "Strip Image Metadata"
+        panel.message = "Clean copies are saved to Downloads. The originals aren’t changed."
+        panel.prompt = "Strip"
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.jpeg, .png, .webP]
+        guard panel.runModal() == .OK else { return }
+        model.stripFiles(panel.urls, revealInFinder: true)
     }
 
     @objc private func chooseStyle(_ sender: NSMenuItem) {

@@ -27,6 +27,8 @@ enum PopupAction: Equatable {
     case clean
     /// Rewrite with the on-device model (Layer B).
     case reword
+    /// Strip metadata from dropped image files.
+    case files
 }
 
 /// Drives the flow: copy → ready → hover opens popup → Paste & Clean → live progress →
@@ -64,6 +66,8 @@ final class AppModel {
     private(set) var rewordUnavailableReason: String?
     private(set) var rewordProgress: RewriteProgress?
     private(set) var isBusy = false
+    /// A file is being dragged over the island.
+    private(set) var isDropTargeted = false
 
     @ObservationIgnored let cleaner = ClipboardCleaner()
     @ObservationIgnored private let monitor = ClipboardMonitor()
@@ -169,6 +173,7 @@ final class AppModel {
 
     func closePopup() {
         guard island == .popup, !isCleaning else { return }
+        isDropTargeted = false
         resetStage()
         finishedAt = nil
         island = hasPendingText ? .ready : .hidden
@@ -202,6 +207,72 @@ final class AppModel {
     func setRewordStyle(_ style: RewriteStyle) {
         Preferences.rewordStyle = style
         rewordStyle = style
+    }
+
+    // MARK: Files
+
+    /// A file drag reached the notch: open right away so the popup can take the drop.
+    func dropEntered() {
+        openTask?.cancel()
+        if island != .popup { openPopup() }
+        isDropTargeted = true
+    }
+
+    func dropExited() {
+        isDropTargeted = false
+    }
+
+    /// Saves metadata-free copies to Downloads and puts them on the clipboard.
+    func stripFiles(_ urls: [URL], revealInFinder: Bool = false) {
+        isDropTargeted = false
+        guard !urls.isEmpty, !isCleaning else { return }
+        Task { await strip(urls, inPopup: island == .popup, revealInFinder: revealInFinder) }
+    }
+
+    private func strip(_ urls: [URL], inPopup: Bool, revealInFinder: Bool) async {
+        isCleaning = true
+        action = .files
+        let started = ContinuousClock.now
+        if inPopup {
+            resetStage()
+            stage = .processing
+            originalPreview = urls.map(\.lastPathComponent).joined(separator: "\n")
+        }
+        let directory = Self.downloadsDirectory
+        let report = await Task.detached(priority: .userInitiated) {
+            MetadataFileCleaner.process(urls, into: directory)
+        }.value
+        let outputs = report.cleaned.compactMap(\.output)
+        if !outputs.isEmpty {
+            cleaner.put(fileURLs: outputs)
+            if revealInFinder { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
+        }
+        if inPopup {
+            cleanedPreview = report.items.map(Self.describe).joined(separator: "\n")
+            progress = 1
+            let remaining = Self.minimumActivity - (ContinuousClock.now - started)
+            if remaining > .zero { try? await Task.sleep(for: remaining) }
+        }
+        isCleaning = false
+        finish(.filesProcessed(report), inPopup: inPopup)
+    }
+
+    private static func describe(_ item: FileStripReport.Item) -> String {
+        let name = item.output?.lastPathComponent ?? item.source.lastPathComponent
+        switch item.error {
+        case .unsupportedFormat: return "\(name) · not a JPEG, PNG or WebP"
+        case .malformed: return "\(name) · couldn’t be read"
+        case nil:
+            guard item.output != nil else { return "\(name) · no metadata" }
+            let kinds = item.removed.map(\.title).joined(separator: ", ")
+            return "\(name) · removed \(kinds)\(item.aiProvenance ? " · AI provenance" : "")"
+        }
+    }
+
+    /// The real Downloads folder (the sandbox grants it via the downloads entitlement).
+    static var downloadsDirectory: URL {
+        let home = getpwuid(getuid()).flatMap { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
+        return URL(fileURLWithPath: home).appendingPathComponent("Downloads", isDirectory: true)
     }
 
     func undo() {
@@ -317,7 +388,7 @@ final class AppModel {
             setPending(false)
         case .clipboardChanged:
             refreshPendingState()
-        case .tooLarge, .accessDenied, .unreadable, .rewriteFailed, .cancelled:
+        case .tooLarge, .accessDenied, .unreadable, .rewriteFailed, .cancelled, .filesProcessed:
             break
         }
 
@@ -365,6 +436,11 @@ extension CleanOutcome {
         case .unreadable: return "Couldn’t read clipboard"
         case let .rewritten(divergence): return "Reworded · \(Int((divergence * 100).rounded()))% of phrasing changed"
         case .cancelled: return "Reword cancelled"
+        case .filesProcessed(let report):
+            let count = report.cleaned.count
+            if count == 0 { return report.alreadyClean > 0 ? "No metadata found" : "Couldn’t strip metadata" }
+            let files = count == 1 ? "image" : "\(count) images"
+            return report.aiProvenance ? "Removed AI provenance from \(files)" : "Stripped metadata from \(files)"
         case .rewriteFailed(let error):
             switch error {
             case .unavailable: return "Reword unavailable"
@@ -390,6 +466,14 @@ extension CleanOutcome {
         case .unreadable: "The app that copied this text may have quit."
         case .rewritten: "Plain text is on your clipboard. Read it before you use it: meaning can shift."
         case .cancelled: "Your clipboard is unchanged."
+        case .filesProcessed(let report):
+            if !report.cleaned.isEmpty {
+                "Clean \(report.cleaned.count == 1 ? "copy" : "copies") saved to Downloads and copied. ⌘V attaches \(report.cleaned.count == 1 ? "it" : "them")."
+            } else if report.alreadyClean > 0 {
+                "Nothing to remove, so no copy was made."
+            } else {
+                "Unmark handles JPEG, PNG and WebP images."
+            }
         case .rewriteFailed(let error):
             switch error {
             case .unavailable(let reason): reason
@@ -407,6 +491,7 @@ extension CleanOutcome {
     var isSuccess: Bool {
         switch self {
         case .cleaned, .rewritten: true
+        case .filesProcessed(let report): !report.cleaned.isEmpty
         default: false
         }
     }
@@ -415,6 +500,7 @@ extension CleanOutcome {
         switch self {
         case .tooLarge, .accessDenied, .unreadable, .clipboardChanged: true
         case .rewriteFailed(let error): error != .nothingToRewrite
+        case .filesProcessed(let report): report.cleaned.isEmpty && report.alreadyClean == 0
         default: false
         }
     }

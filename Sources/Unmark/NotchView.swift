@@ -138,6 +138,10 @@ private struct PopupView: View {
             .padding(.top, 10)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if model.isDropTargeted { dropZone.transition(.opacity) }
+            }
+            .animation(.smooth(duration: 0.18), value: model.isDropTargeted)
         }
         .overlay(alignment: .bottom) {
             if showsBar {
@@ -205,8 +209,36 @@ private struct PopupView: View {
                 .foregroundStyle(.white.opacity(0.5))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Label("Drop images here to strip metadata", systemImage: "photo.on.rectangle")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.white.opacity(0.4))
             Spacer(minLength: 0)
         }
+    }
+
+    private var dropZone: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "photo.badge.checkmark")
+                .font(.system(size: 26, weight: .medium))
+            Text("Drop to strip metadata")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Removes C2PA AI labels, EXIF, GPS and XMP without re-encoding. Originals stay untouched.")
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(0.5), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+        )
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 14)
     }
 
     private var canReword: Bool {
@@ -214,9 +246,9 @@ private struct PopupView: View {
     }
 
     private var caption: String {
-        guard model.clipboardHasText else { return "Copy some text first." }
+        guard model.clipboardHasText else { return "Copy some text to clean or reword." }
         if let reason = model.rewordUnavailableReason { return "Clean removes hidden characters. \(reason)" }
-        return "Clean removes hidden characters. Reword rewrites on this Mac: \(model.rewordStyle.summary.lowercased())."
+        return "Clean removes hidden characters. Reword, on this Mac: \(model.rewordStyle.summary.lowercased())."
     }
 
     private var activity: some View {
@@ -233,7 +265,7 @@ private struct PopupView: View {
                         .buttonStyle(SmallButtonStyle())
                         .accessibilityHint("Stops rewording and leaves the clipboard unchanged")
                 }
-                if case .done(let outcome) = model.stage, outcome.isSuccess {
+                if case .done(let outcome) = model.stage, outcome.isSuccess, model.action != .files {
                     Button("Undo", action: model.undo)
                         .buttonStyle(SmallButtonStyle())
                         .accessibilityHint("Puts the original copied text back on the clipboard")
@@ -278,6 +310,8 @@ private struct PopupView: View {
         case .idle: ""
         case .processing where model.action == .reword:
             rewordTitle
+        case .processing where model.action == .files:
+            "Stripping metadata…"
         case .processing:
             model.originalPreview == nil ? "Reading clipboard…" : "Cleaning \(markCount) hidden \(markCount == 1 ? "mark" : "marks")…"
         case .done(let outcome): outcome.message
@@ -299,6 +333,8 @@ private struct PopupView: View {
         case .idle: ""
         case .processing where model.action == .reword:
             "\(model.rewordStyle.title) · Apple Intelligence, on this Mac · Clipboard changes when done"
+        case .processing where model.action == .files:
+            "Lossless: pixels aren’t re-encoded. Originals stay untouched."
         case .processing: markCount > 0 ? "Highlighted:  •  hidden character    ␣  unusual space" : "Checking for hidden characters…"
         case .done(let outcome): outcome.detail
         case .undone: "Your clipboard holds the original text again."
@@ -309,6 +345,7 @@ private struct PopupView: View {
         switch model.stage {
         case .idle: model.hasPendingText ? "Text ready" : ""
         case .processing: "\(Int(model.progress * 100))%"
+        case .done(let outcome) where model.action == .files: outcome.isSuccess ? "⌘V to attach" : ""
         case .done(let outcome): outcome.isSuccess ? "⌘V to paste" : ""
         case .undone: ""
         }
@@ -329,6 +366,7 @@ private struct PopupView: View {
 
     private var previewKey: String {
         if model.action == .reword { return "reword" }
+        if model.action == .files { return "files" }
         if case .done(let outcome) = model.stage, outcome.isSuccess { return "cleaned" }
         return "original"
     }
@@ -341,6 +379,13 @@ private struct PopupView: View {
     /// cleaned text is shown as is.
     private var previewText: AttributedString? {
         if model.action == .reword { return rewordPreview }
+        if model.action == .files {
+            let done = if case .done = model.stage { true } else { false }
+            guard let text = done ? model.cleanedPreview : model.originalPreview else { return nil }
+            var result = AttributedString(text)
+            result.foregroundColor = .white.opacity(done ? 0.88 : 0.5)
+            return result
+        }
         if case .done(let outcome) = model.stage, outcome.isSuccess, let cleaned = model.cleanedPreview {
             var text = AttributedString(cleaned)
             text.foregroundColor = .white.opacity(0.88)

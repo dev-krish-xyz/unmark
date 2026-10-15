@@ -16,6 +16,8 @@ public enum CleanOutcome: Sendable, Equatable {
     case rewriteFailed(RewriteError)
     /// The user stopped a reword; nothing was written.
     case cancelled
+    /// Image files were processed; clean copies were saved and put on the clipboard.
+    case filesProcessed(FileStripReport)
 }
 
 /// Reads, cleans and rewrites a pasteboard. Only ever invoked from an explicit user action.
@@ -98,6 +100,15 @@ public final class ClipboardCleaner {
 
     /// Replaces the clipboard with plain text derived from `snapshot`, unless the clipboard
     /// changed in the meantime. Undo restores the snapshot.
+    /// Puts file URLs on the clipboard so ⌘V attaches them. Nothing is read first, so this
+    /// can't be undone.
+    public func put(fileURLs: [URL]) {
+        pasteboard.clearContents()
+        pasteboard.writeObjects(fileURLs as [NSURL])
+        undoSnapshot = nil
+        lastWrittenChangeCount = pasteboard.changeCount
+    }
+
     public func commit(plainText: String, from snapshot: PasteboardSnapshot) -> Bool {
         guard pasteboard.changeCount == snapshot.changeCount else { return false }
         write([[PasteboardSnapshot.Entry(type: PasteboardTypes.plainUTF8, data: Data(plainText.utf8))]], markSource: true)
